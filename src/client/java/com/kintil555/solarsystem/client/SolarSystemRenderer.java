@@ -60,6 +60,17 @@ public final class SolarSystemRenderer {
 	private final java.util.Map<Integer, float[]> ringData = new java.util.HashMap<>();
 	private float partialTick;
 
+	private static final float ROCK_BURN_RATE = 0.14f;
+	private static final float GAS_BURN_RATE = 0.014f;
+	private static final float GAS_MAX_DEPTH = 0.3f;
+	private static final int FILL_COLOR = 0x2630E060; // green, 15% opacity
+	private static final int OUTLINE_COLOR = 0xE6FFFFFF;
+	/** Laser damage per planet and cell (0..1): charred texture on rocky planets, sunk cells on gas/ice ones. */
+	private final float[][] burnData;
+	private final int[] colorScratch = new int[700];
+	private final float[] sinkScratch = new float[700];
+	private final java.util.Map<Integer, int[]> fillArrays = new java.util.HashMap<>();
+
 	/** One thing to draw this frame, sorted far -> near with the others. */
 	private record Item(double dist, Runnable draw) {}
 
@@ -73,6 +84,7 @@ public final class SolarSystemRenderer {
 		java.util.Arrays.fill(halo2, 0x14FF7814);
 
 		planetMeshes = new BodyMesh[system.planets().size()];
+		burnData = new float[system.planets().size()][];
 		for (Planet p : system.planets()) {
 			BodyMesh mesh;
 			if (p.kind() == Kind.EARTH) {
@@ -152,6 +164,41 @@ public final class SolarSystemRenderer {
 		}
 	}
 
+	/** Laser hit at {@code (lx, ly, lz)} in the planet's local frame; adds damage around the nearest cells. */
+	void burn(Planet p, float lx, float ly, float lz) {
+		BodyMesh m = planetMeshes[p.index()];
+		float len = (float) Math.sqrt(lx * lx + ly * ly + lz * lz);
+		if (len < 1e-6f) {
+			return;
+		}
+		lx /= len;
+		ly /= len;
+		lz /= len;
+		float[] b = burnData[p.index()];
+		if (b == null) {
+			b = new float[m.cells];
+			burnData[p.index()] = b;
+		}
+		float rate = isSolid(p) ? ROCK_BURN_RATE : GAS_BURN_RATE;
+		for (int c = 0; c < m.cells; c++) {
+			float dot = lx * m.normals[c * 3] + ly * m.normals[c * 3 + 1] + lz * m.normals[c * 3 + 2];
+			float w = (dot - 0.955f) / 0.045f;
+			if (w > 0.0f) {
+				b[c] = Math.min(1.0f, b[c] + rate * w * w);
+			}
+		}
+	}
+
+	private static boolean isSolid(Planet p) {
+		return p.kind() == Kind.ROCKY || p.kind() == Kind.EARTH;
+	}
+
+	private static int mix(int a, int b, float t) {
+		float u = 1.0f - t;
+		return Painter.rgb(((a >> 16) & 0xFF) * u + ((b >> 16) & 0xFF) * t, ((a >> 8) & 0xFF) * u + ((b >> 8) & 0xFF) * t,
+				(a & 0xFF) * u + (b & 0xFF) * t, a >>> 24);
+	}
+
 	// ------------------------------------------------------------------ rendering
 
 	static void onCollectSubmits(LevelRenderContext context) {
@@ -216,6 +263,11 @@ public final class SolarSystemRenderer {
 			final double pd = dist[p.index()];
 			final float radius = SolarView.radiusOf(p);
 			items.add(new Item(pd, () -> drawPlanet(vc, pose, p, pp, radius, ticks, cx, cy, cz, sunX, sunY, sunZ)));
+			final boolean sel = FreeLaunch.selected == p.index();
+			final boolean hov = FreeLaunch.hovered == p.index();
+			if (sel || hov) {
+				items.add(new Item(pd - 0.002, () -> drawSelection(vc, pose, p, pp, radius, ticks, cx, cy, cz, sunX, sunY, sunZ, sel, hov)));
+			}
 			if (SolarView.hasRing(p)) {
 				items.add(new Item(pd + 0.001, () -> drawRing(vc, pose, p, pp, radius, ticks, cx, cy, cz, sunX, sunY, sunZ, pd, false)));
 				items.add(new Item(pd - 0.001, () -> drawRing(vc, pose, p, pp, radius, ticks, cx, cy, cz, sunX, sunY, sunZ, pd, true)));
@@ -244,6 +296,7 @@ public final class SolarSystemRenderer {
 			final double[] ap = av.clone();
 			double ad = Math.sqrt(sq(ap[0] - cx) + sq(ap[1] - cy) + sq(ap[2] - cz));
 			items.add(new Item(ad, () -> {
+				drawTrail(vc, pose, a, map, ap, cx, cy, cz);
 				rot.identity().rotateAxis((float) (ticks * a.spin), a.ax, a.ay, a.az);
 				emitBody(vc, pose, rockMesh, rockMesh.colors, rot, (float) ap[0], (float) ap[1], (float) ap[2], a.size,
 						cx, cy, cz, MODE_SHADED, 0.1f, sunX, sunY, sunZ);
@@ -265,8 +318,8 @@ public final class SolarSystemRenderer {
 	private void drawBeam(VertexConsumer vc, PoseStack.Pose pose, SolarView.Beam b, float cx, float cy, float cz) {
 		float life = Math.max(0.0f, (b.ticksLeft - partialTick) / b.maxTicks);
 		int alpha = (int) (230 * life);
-		drawPolyline(vc, pose, b.pts, 2, (alpha / 2 << 24) | 0xFF3050, cx, cy, cz, 0.004f, 0.4f, false, false);
-		drawPolyline(vc, pose, b.pts, 2, (alpha << 24) | 0xFFE0E0, cx, cy, cz, 0.0016f, 0.15f, false, false);
+		drawPolyline(vc, pose, b.pts, 2, (alpha / 2 << 24) | 0xFF3050, cx, cy, cz, 0.0016f, 0.12f, false, false);
+		drawPolyline(vc, pose, b.pts, 2, (alpha << 24) | 0xFFE0E0, cx, cy, cz, 0.0007f, 0.05f, false, false);
 	}
 
 	/** Particle ring in the planet's equatorial plane; the half behind the planet is drawn before it. */
@@ -442,13 +495,132 @@ public final class SolarSystemRenderer {
 		rot.identity().rotateZ(p.tilt()).rotateY(spin);
 		float ambient = p.kind() == Kind.EARTH ? 0.10f : 0.08f;
 		BodyMesh mesh = planetMeshes[p.index()];
-		emitBody(vc, pose, mesh, mesh.colors, rot, (float) pos[0], (float) pos[1], (float) pos[2], radius,
-				cx, cy, cz, MODE_SHADED, ambient, sx, sy, sz);
+		int[] colors = mesh.colors;
+		float[] sink = null;
+		float[] burn = burnData[p.index()];
+		if (burn != null) {
+			boolean solid = isSolid(p);
+			colors = colorScratch;
+			sink = solid ? null : sinkScratch;
+			for (int c = 0; c < mesh.cells; c++) {
+				int base = mesh.colors[c];
+				float v = burn[c];
+				if (sink != null) {
+					sink[c] = v * GAS_MAX_DEPTH;
+				}
+				if (v <= 0.0f) {
+					colors[c] = base;
+				} else if (solid) {
+					int g = 18 + (c * 37) % 17;
+					colors[c] = mix(base, (g << 16) | ((g - 4) << 8) | (g - 7), Math.min(1.0f, v * 1.3f));
+				} else {
+					colors[c] = mix(base, 0x3A241A, Math.min(1.0f, v * 0.75f));
+				}
+			}
+		}
+		emitBody(vc, pose, mesh, colors, rot, (float) pos[0], (float) pos[1], (float) pos[2], radius,
+				cx, cy, cz, MODE_SHADED, ambient, sx, sy, sz, sink);
+	}
+
+	/** Green 15% fill when selected, white cube outline when hovered or selected. */
+	private void drawSelection(VertexConsumer vc, PoseStack.Pose pose, Planet p, double[] pos, float radius, double ticks,
+							   float cx, float cy, float cz, float sx, float sy, float sz, boolean selected, boolean hovered) {
+		float spin = (float) (p.spinAngleAt(ticks) % (2.0 * Math.PI));
+		rot.identity().rotateZ(p.tilt()).rotateY(spin);
+		BodyMesh mesh = planetMeshes[p.index()];
+		if (selected) {
+			int[] fill = fillArrays.computeIfAbsent(mesh.cells, n -> {
+				int[] a = new int[n];
+				java.util.Arrays.fill(a, FILL_COLOR);
+				return a;
+			});
+			emitBody(vc, pose, mesh, fill, rot, (float) pos[0], (float) pos[1], (float) pos[2], radius * 1.012f,
+					cx, cy, cz, MODE_FLAT, 1.0f, sx, sy, sz, null);
+		}
+		if (hovered) {
+			drawOutline(vc, pose, pos, radius * 1.012f, cx, cy, cz);
+		}
+	}
+
+	/** The 12 edges of the (rotated, in {@link #rot}) cube; edges on the far side are skipped. */
+	private void drawOutline(VertexConsumer vc, PoseStack.Pose pose, double[] pos, float r, float cx, float cy, float cz) {
+		float[] pts = new float[6];
+		float[] lo = new float[3];
+		float[] hi = new float[3];
+		for (int axis = 0; axis < 3; axis++) {
+			int b = (axis + 1) % 3;
+			int c2 = (axis + 2) % 3;
+			for (int s1 = -1; s1 <= 1; s1 += 2) {
+				for (int s2 = -1; s2 <= 1; s2 += 2) {
+					lo[axis] = -1.0f;
+					hi[axis] = 1.0f;
+					lo[b] = s1;
+					hi[b] = s1;
+					lo[c2] = s2;
+					hi[c2] = s2;
+
+					// visible if either neighbouring face looks towards the camera
+					float mx = (float) pos[0], my = (float) pos[1], mz = (float) pos[2];
+					tmp.set(0.0f, 0.0f, 0.0f).setComponent(b, s1);
+					rot.transform(tmp);
+					float n1x = tmp.x, n1y = tmp.y, n1z = tmp.z;
+					tmp.set(0.0f, 0.0f, 0.0f).setComponent(c2, s2);
+					rot.transform(tmp);
+					float n2x = tmp.x, n2y = tmp.y, n2z = tmp.z;
+					tmp.set(0.0f, 0.0f, 0.0f).setComponent(b, s1).setComponent(c2, s2);
+					rot.transform(tmp);
+					float ex = mx + tmp.x * r, ey = my + tmp.y * r, ez = mz + tmp.z * r;
+					float vx = cx - ex, vy = cy - ey, vz = cz - ez;
+					if (n1x * vx + n1y * vy + n1z * vz <= 0.0f && n2x * vx + n2y * vy + n2z * vz <= 0.0f) {
+						continue;
+					}
+					tmp.set(lo[0], lo[1], lo[2]);
+					rot.transform(tmp);
+					pts[0] = mx + tmp.x * r;
+					pts[1] = my + tmp.y * r;
+					pts[2] = mz + tmp.z * r;
+					tmp.set(hi[0], hi[1], hi[2]);
+					rot.transform(tmp);
+					pts[3] = mx + tmp.x * r;
+					pts[4] = my + tmp.y * r;
+					pts[5] = mz + tmp.z * r;
+					drawPolyline(vc, pose, pts, 2, OUTLINE_COLOR, cx, cy, cz, 0.0013f, 0.08f, false, false);
+				}
+			}
+		}
+	}
+
+	/** Coloured comet tail: newest point first, fading towards the oldest. */
+	private void drawTrail(VertexConsumer vc, PoseStack.Pose pose, SolarView.Asteroid a, RadialMap map, double[] head,
+						   float cx, float cy, float cz) {
+		int count = a.trailCount;
+		if (count < 2) {
+			return;
+		}
+		float[] pts = new float[(count + 1) * 3];
+		pts[0] = (float) head[0];
+		pts[1] = (float) head[1];
+		pts[2] = (float) head[2];
+		double[] v = new double[3];
+		for (int i = 0; i < count; i++) {
+			SolarView.toVisual(map, a.trail[i * 3], a.trail[i * 3 + 1], a.trail[i * 3 + 2], v);
+			pts[(i + 1) * 3] = (float) v[0];
+			pts[(i + 1) * 3 + 1] = (float) v[1];
+			pts[(i + 1) * 3 + 2] = (float) v[2];
+		}
+		drawPolyline(vc, pose, pts, count + 1, 0xE0000000 | a.color, cx, cy, cz, 0.0010f, 0.1f, false, true);
 	}
 
 	private void emitBody(VertexConsumer vc, PoseStack.Pose pose, BodyMesh m, int[] colors, Quaternionf q,
 						  float px, float py, float pz, float radius, float camX, float camY, float camZ,
 						  int mode, float ambient, float sunX, float sunY, float sunZ) {
+		emitBody(vc, pose, m, colors, q, px, py, pz, radius, camX, camY, camZ, mode, ambient, sunX, sunY, sunZ, null);
+	}
+
+	/** {@code sink} (optional, per cell 0..1) pushes a cell towards the centre and draws the pit walls. */
+	private void emitBody(VertexConsumer vc, PoseStack.Pose pose, BodyMesh m, int[] colors, Quaternionf q,
+						  float px, float py, float pz, float radius, float camX, float camY, float camZ,
+						  int mode, float ambient, float sunX, float sunY, float sunZ, float[] sink) {
 		float cullThreshold = m.cube ? -0.02f : -0.15f;
 		for (int c = 0; c < m.cells; c++) {
 			tmp.set(m.shade[c * 3], m.shade[c * 3 + 1], m.shade[c * 3 + 2]);
@@ -482,11 +654,35 @@ public final class SolarSystemRenderer {
 
 			int base = colors[c];
 			int color = Painter.rgb(((base >> 16) & 0xFF) * k, ((base >> 8) & 0xFF) * k, (base & 0xFF) * k, base >>> 24);
+			float ks = sink != null ? 1.0f - sink[c] : 1.0f;
 			for (int i = 0; i < 4; i++) {
 				int o = c * 12 + i * 3;
 				tmp.set(m.corners[o], m.corners[o + 1], m.corners[o + 2]);
 				q.transform(tmp);
-				vc.addVertex(pose, px + tmp.x * radius, py + tmp.y * radius, pz + tmp.z * radius).setColor(color);
+				vc.addVertex(pose, px + tmp.x * radius * ks, py + tmp.y * radius * ks, pz + tmp.z * radius * ks).setColor(color);
+			}
+			if (sink != null && sink[c] > 0.02f) {
+				int wall = (color & 0xFF000000) | ((color >> 1) & 0x7F7F7F);
+				for (int i = 0; i < 4; i++) {
+					int o1 = c * 12 + i * 3;
+					int o2 = c * 12 + ((i + 1) & 3) * 3;
+					tmp.set(m.corners[o1], m.corners[o1 + 1], m.corners[o1 + 2]);
+					q.transform(tmp);
+					float ax = tmp.x * radius, ay = tmp.y * radius, az = tmp.z * radius;
+					tmp.set(m.corners[o2], m.corners[o2 + 1], m.corners[o2 + 2]);
+					q.transform(tmp);
+					float bx = tmp.x * radius, by = tmp.y * radius, bz = tmp.z * radius;
+					float mx = (ax + bx) * 0.5f, my = (ay + by) * 0.5f, mz = (az + bz) * 0.5f;
+					// the pit wall is only seen from the side of the pit centre
+					float inx = (wx - px) - mx, iny = (wy - py) - my, inz = (wz - pz) - mz;
+					if (inx * (camX - px - mx) + iny * (camY - py - my) + inz * (camZ - pz - mz) <= 0.0f) {
+						continue;
+					}
+					vc.addVertex(pose, px + ax, py + ay, pz + az).setColor(wall);
+					vc.addVertex(pose, px + bx, py + by, pz + bz).setColor(wall);
+					vc.addVertex(pose, px + bx * ks, py + by * ks, pz + bz * ks).setColor(wall);
+					vc.addVertex(pose, px + ax * ks, py + ay * ks, pz + az * ks).setColor(wall);
+				}
 			}
 		}
 	}

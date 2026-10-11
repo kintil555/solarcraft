@@ -60,11 +60,11 @@ final class ToolbarPanel extends AbstractComponent {
 	private static String describe() {
 		return switch (SolarView.tab) {
 			case CAMERA -> SolarView.mode == SolarView.Mode.FREE
-					? "Free: kamera bebas mengitari tata surya. Scroll untuk zoom, tahan klik kanan untuk geser, tahan klik kiri untuk orbit."
+					? "Free: scroll zoom, klik kanan geser, klik kiri orbit. Klik planet (hijau) lalu tarik dengan klik kiri untuk melempar orbitnya."
 					: "Explore: terbang seperti biasa. Pilih Free untuk kamera orbit dengan kursor.";
 			case TOOLS -> switch (SolarView.tool) {
 				case NONE -> "Pilih sebuah tool, lalu klik planet atau ruang kosong di dunia.";
-				case LASER -> "Laser: klik planet untuk menembak. Dorongannya mengubah orbit planet sedikit.";
+				case LASER -> "Laser: tahan klik kiri pada planet. Planet batu hangus, planet gas terkikis ke dalam.";
 				case RING -> "Planet Ring: klik planet untuk memasang atau melepas cincin partikel.";
 				case ASTEROID -> "Asteroid: klik di bidang orbit untuk melepas asteroid yang mengorbit Matahari.";
 				case MOON -> "Moon: klik planet untuk menambah bulan (maksimal 4 per planet).";
@@ -77,19 +77,18 @@ final class ToolbarPanel extends AbstractComponent {
 	private static void drawKeys(GuiGraphicsExtractor g, Font font, int x, int y, int width) {
 		String cam = SolarSystemClient.cameraKey().getTranslatedKeyMessage().getString();
 		String bar = SolarSystemClient.toolbarKey().getTranslatedKeyMessage().getString();
-		String launch = SolarSystemClient.launchKey().getTranslatedKeyMessage().getString();
 		String[] left = {
 				"Mode Free",
 				"Scroll : zoom",
 				"Tahan klik kanan : geser",
 				"Tahan klik kiri : orbit",
-				"Klik (tool aktif) : pakai tool"};
+				"Klik planet, lalu tarik : luncurkan"};
 		String[] right = {
 				"Umum",
 				cam + " : ganti Free / Explore",
 				bar + " : buka / tutup toolbar",
 				"1-4 : pilih tool, ESC : keluar",
-				launch + " : luncurkan planet (Explore)"};
+				"Laser : tahan klik kiri"};
 		int half = width / 2;
 		for (int i = 0; i < left.length; i++) {
 			int color = i == 0 ? AstroButton.ACCENT : AstroButton.TEXT_DIM;

@@ -90,7 +90,7 @@ public final class FreeCamera {
 	}
 
 	static void orbit(double dx, double dy) {
-		yaw -= (float) dx * ORBIT_SPEED;
+		yaw += (float) dx * ORBIT_SPEED; // drag right -> scene follows the cursor
 		pitch = Mth.clamp(pitch + (float) dy * ORBIT_SPEED, -89.0f, 89.0f);
 	}
 

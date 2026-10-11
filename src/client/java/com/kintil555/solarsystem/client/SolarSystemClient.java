@@ -11,10 +11,8 @@ import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
-import net.minecraft.network.chat.Component;
 import net.minecraft.world.phys.Vec3;
 
-import com.kintil555.solarsystem.LaunchPayload;
 import com.kintil555.solarsystem.SeedPayload;
 import com.kintil555.solarsystem.SolarSystemMod;
 import com.kintil555.solarsystem.StatePayload;
@@ -25,13 +23,8 @@ public final class SolarSystemClient implements ClientModInitializer {
 	/** Aim preview shown while the launch key is held. */
 	record Preview(int planet, float power, Vec3 dir, SolarPhysics.Prediction prediction, double[] from) {}
 
-	private static final int KEY_R = 82;
 	private static final int KEY_G = 71;
 	private static final int KEY_V = 86;
-	private static final float FULL_CHARGE_TICKS = 60.0f;
-	private static final int PREVIEW_HORIZON = 9000;
-	private static final int PREVIEW_EVERY = 30;
-	private static final int PREVIEW_SUBSTEPS = 2;
 
 	private static volatile SolarSystemRenderer renderer;
 	private static volatile SolarSystem system;
@@ -39,13 +32,9 @@ public final class SolarSystemClient implements ClientModInitializer {
 	private static volatile Preview preview;
 	private static long clientTick;
 	private static long rxTick;
-	private static KeyMapping launchKey;
 	private static KeyMapping toolbarKey;
 	private static KeyMapping cameraKey;
 
-	private static boolean charging;
-	private static int selected = -1;
-	private static int chargeTicks;
 
 	static SolarSystemRenderer renderer() {
 		return renderer;
@@ -63,8 +52,8 @@ public final class SolarSystemClient implements ClientModInitializer {
 		return preview;
 	}
 
-	static KeyMapping launchKey() {
-		return launchKey;
+	static void setPreview(Preview next) {
+		preview = next;
 	}
 
 	static KeyMapping toolbarKey() {
@@ -82,8 +71,6 @@ public final class SolarSystemClient implements ClientModInitializer {
 
 	@Override
 	public void onInitializeClient() {
-		launchKey = KeyMappingHelper.registerKeyMapping(
-				new KeyMapping("key.solarsystem.launch", InputConstants.Type.KEYSYM, KEY_R, KeyMapping.Category.GAMEPLAY));
 		toolbarKey = KeyMappingHelper.registerKeyMapping(
 				new KeyMapping("key.solarsystem.toolbar", InputConstants.Type.KEYSYM, KEY_G, KeyMapping.Category.GAMEPLAY));
 		cameraKey = KeyMappingHelper.registerKeyMapping(
@@ -110,7 +97,6 @@ public final class SolarSystemClient implements ClientModInitializer {
 			system = null;
 			physics = null;
 			preview = null;
-			charging = false;
 			SolarView.reset();
 		});
 		ClientTickEvents.END_CLIENT_TICK.register(SolarSystemClient::onTick);
@@ -144,45 +130,12 @@ public final class SolarSystemClient implements ClientModInitializer {
 		} else if (SolarView.mode == SolarView.Mode.FREE) {
 			SolarView.setMode(SolarView.Mode.EXPLORE);
 		}
-		if (!inSpace || mc.gui.screen() != null) {
-			charging = false;
+		if (!inSpace) {
 			preview = null;
 			return;
 		}
-
-		boolean down = launchKey.isDown();
-		SolarPhysics now = phys.copy();
-		now.advance(syncAge(0.0f));
-
-		if (down) {
-			if (!charging) {
-				int pick = SolarTools.pick(player.getEyePosition(), player.getViewVector(1.0f).normalize()).planet();
-				if (pick >= 0) {
-					charging = true;
-					selected = pick;
-					chargeTicks = 0;
-				}
-			}
-			if (charging) {
-				chargeTicks++;
-				float power = Math.min(1.0f, chargeTicks / FULL_CHARGE_TICKS);
-				Vec3 dir = player.getViewVector(1.0f).normalize();
-				double dv = power * SolarPhysics.MAX_DV;
-				SolarPhysics.Prediction prediction = now.predict(selected, dir.x * dv, dir.y * dv, dir.z * dv,
-						PREVIEW_HORIZON, PREVIEW_EVERY, PREVIEW_SUBSTEPS);
-				preview = new Preview(selected, power, dir, prediction,
-						new double[] {now.px(selected), now.py(selected), now.pz(selected)});
-				String text = "Daya " + Math.round(power * 100) + "%" + (prediction.crashed() ? "  - menabrak Matahari!" : "")
-						+ "  (lepas R untuk meluncurkan)";
-				player.sendOverlayMessage(Component.literal(text));
-			}
-		} else if (charging) {
-			Preview p = preview;
-			if (p != null && p.power() > 0.04f) {
-				ClientPlayNetworking.send(new LaunchPayload(p.planet(), (float) p.dir().x, (float) p.dir().y, (float) p.dir().z, p.power()));
-			}
-			charging = false;
-			preview = null;
+		if (SolarView.mode == SolarView.Mode.FREE) {
+			FreeLaunch.tick(phys);
 		}
 	}
 }

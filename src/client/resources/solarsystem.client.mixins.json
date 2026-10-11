@@ -4,7 +4,9 @@
 	"package": "com.kintil555.solarsystem.client.mixin",
 	"compatibilityLevel": "JAVA_21",
 	"client": [
-		"CameraMixin"
+		"CameraMixin",
+		"HudMixin",
+		"GameRendererMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

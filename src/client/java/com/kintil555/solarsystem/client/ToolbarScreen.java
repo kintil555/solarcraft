@@ -38,6 +38,7 @@ final class ToolbarScreen extends AbstractScreen {
 	private double pressX;
 	private double pressY;
 	private boolean moved;
+	private boolean aimMode;
 
 	ToolbarScreen() {
 		super(Component.literal("Solar Toolbar"));
@@ -80,6 +81,19 @@ final class ToolbarScreen extends AbstractScreen {
 
 	@Override
 	protected void init() {
+		if (SolarView.mode == SolarView.Mode.FREE && !SolarView.expanded) {
+			// Free mode: only a small arrow at the bottom; the panel opens when it is clicked
+			pw = 44;
+			ph = 18;
+			px = (width - pw) / 2;
+			py = height - ph - MARGIN;
+			addWidget(new AstroButton(px, py, pw, ph, Component.empty(), AstroButton.Icon.UP, () -> false, () -> {
+				SolarView.expanded = true;
+				rebuildWidgets();
+			}));
+			super.init();
+			return;
+		}
 		pw = Math.min(MAX_WIDTH, width - 2 * MARGIN);
 		px = (width - pw) / 2;
 		ph = SolarView.expanded ? BAR_H + PANEL_H : BAR_H;
@@ -132,7 +146,10 @@ final class ToolbarScreen extends AbstractScreen {
 			}
 			case TOOLS -> {
 				for (SolarView.Tool tool : SolarView.Tool.values()) {
-					specs.add(new Spec(toolLabel(tool), () -> SolarView.tool == tool, () -> SolarView.tool = tool));
+					specs.add(new Spec(toolLabel(tool), () -> SolarView.tool == tool, () -> {
+						SolarView.tool = tool;
+						FreeLaunch.clear();
+					}));
 				}
 			}
 			case STYLE -> {
@@ -166,8 +183,18 @@ final class ToolbarScreen extends AbstractScreen {
 	@Override
 	public void extractRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
 		super.extractRenderState(g, mouseX, mouseY, partialTick);
-		if (SolarView.tool != SolarView.Tool.NONE && !inToolbar(mouseX, mouseY)) {
+		boolean overUi = inToolbar(mouseX, mouseY);
+		FreeLaunch.updateHover(minecraft, mouseX, mouseY, overUi);
+		if (overUi) {
+			return;
+		}
+		String aim = FreeLaunch.label();
+		if (aim != null) {
+			g.text(font, aim, mouseX + 10, mouseY + 8, AstroButton.ACCENT);
+		} else if (SolarView.tool != SolarView.Tool.NONE) {
 			g.text(font, toolLabel(SolarView.tool), mouseX + 10, mouseY + 8, AstroButton.ACCENT);
+		} else if (FreeLaunch.selected >= 0) {
+			g.text(font, "Tarik untuk melempar", mouseX + 10, mouseY + 8, AstroButton.TEXT_DIM);
 		}
 	}
 
@@ -185,6 +212,10 @@ final class ToolbarScreen extends AbstractScreen {
 		pressX = event.x();
 		pressY = event.y();
 		moved = false;
+		aimMode = dragButton == 0 && FreeLaunch.canAim();
+		if (dragButton == 0 && SolarView.mode == SolarView.Mode.FREE && SolarView.tool == SolarView.Tool.LASER) {
+			SolarView.laserHeld = true;
+		}
 		return true;
 	}
 
@@ -201,7 +232,13 @@ final class ToolbarScreen extends AbstractScreen {
 		}
 		if (SolarView.mode == SolarView.Mode.FREE) {
 			if (dragButton == 0) {
-				FreeCamera.orbit(dx, dy);
+				if (aimMode) {
+					if (moved) {
+						FreeLaunch.drag(event.x() - pressX, event.y() - pressY);
+					}
+				} else if (SolarView.tool != SolarView.Tool.LASER) {
+					FreeCamera.orbit(dx, dy);
+				}
 			} else if (dragButton == 1) {
 				FreeCamera.pan(dx, dy);
 			}
@@ -213,9 +250,21 @@ final class ToolbarScreen extends AbstractScreen {
 	public boolean mouseReleased(MouseButtonEvent event) {
 		boolean handled = super.mouseReleased(event);
 		if (dragButton == event.button()) {
-			if (!moved && dragButton == 0 && SolarView.tool != SolarView.Tool.NONE) {
-				SolarTools.use(minecraft, event.x(), event.y());
+			if (dragButton == 0) {
+				SolarView.laserHeld = false;
+				if (aimMode && moved) {
+					FreeLaunch.release();
+				} else if (!moved) {
+					if (SolarView.tool == SolarView.Tool.NONE) {
+						if (SolarView.mode == SolarView.Mode.FREE) {
+							FreeLaunch.click(minecraft, event.x(), event.y());
+						}
+					} else {
+						SolarTools.use(minecraft, event.x(), event.y());
+					}
+				}
 			}
+			aimMode = false;
 			dragButton = -1;
 		}
 		return handled;
@@ -235,6 +284,10 @@ final class ToolbarScreen extends AbstractScreen {
 
 	@Override
 	public boolean keyPressed(KeyEvent event) {
+		if (event.key() == 256 && FreeLaunch.selected >= 0) { // GLFW ESC: deselect before leaving Free
+			FreeLaunch.clear();
+			return true;
+		}
 		if (SolarSystemClient.cameraKey().matches(event)) {
 			SolarView.setMode(SolarView.mode == SolarView.Mode.FREE ? SolarView.Mode.EXPLORE : SolarView.Mode.FREE);
 			rebuildWidgets();
@@ -248,6 +301,7 @@ final class ToolbarScreen extends AbstractScreen {
 		int index = event.key() - 49; // GLFW '1'
 		if (index >= 0 && index < hotkeys.length) {
 			SolarView.tool = SolarView.tool == hotkeys[index] ? SolarView.Tool.NONE : hotkeys[index];
+			FreeLaunch.clear();
 			rebuildWidgets();
 			return true;
 		}

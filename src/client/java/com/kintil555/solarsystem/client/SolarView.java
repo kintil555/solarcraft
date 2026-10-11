@@ -27,18 +27,36 @@ final class SolarView {
 	static final class Asteroid {
 		final double[] p = new double[3];
 		final double[] v = new double[3];
+		static final int TRAIL_LEN = 60;
+		final double[] trail = new double[TRAIL_LEN * 3];
+		int trailCount;
+		int sampleTick;
+		final int color;
 		final float size;
 		final float spin;
 		final float ax;
 		final float ay;
 		final float az;
 
-		Asteroid(float size, float spin, float ax, float ay, float az) {
+		Asteroid(int color, float size, float spin, float ax, float ay, float az) {
+			this.color = color;
 			this.size = size;
 			this.spin = spin;
 			this.ax = ax;
 			this.ay = ay;
 			this.az = az;
+		}
+
+		/** Remembers the Sun-relative position every second tick (newest first). */
+		void recordTrail() {
+			if ((++sampleTick & 1) != 0) {
+				return;
+			}
+			System.arraycopy(trail, 0, trail, 3, (TRAIL_LEN - 1) * 3);
+			trail[0] = p[0];
+			trail[1] = p[1];
+			trail[2] = p[2];
+			trailCount = Math.min(TRAIL_LEN, trailCount + 1);
 		}
 	}
 
@@ -60,6 +78,8 @@ final class SolarView {
 	static Tool tool = Tool.NONE;
 	static Tab tab = Tab.CAMERA;
 	static boolean expanded;
+	/** Left button held with the laser tool: fires every tick. */
+	static boolean laserHeld;
 
 	static final Set<Integer> userRings = new HashSet<>();
 	static final List<Moon> moons = new ArrayList<>();
@@ -112,6 +132,8 @@ final class SolarView {
 			return;
 		}
 		mode = next;
+		laserHeld = false;
+		FreeLaunch.clear();
 		if (next == Mode.FREE) {
 			LocalPlayer player = Minecraft.getInstance().player;
 			Vec3 eye = player != null ? player.getEyePosition() : SolarSystem.SUN_CENTER.add(0.0, 40.0, 260.0);

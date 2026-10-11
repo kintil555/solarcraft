@@ -9,6 +9,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
 
 import com.kintil555.solarsystem.LaunchPayload;
 import com.kintil555.solarsystem.system.SolarPhysics;
@@ -23,9 +25,9 @@ final class SolarTools {
 	record Hit(int planet, double t) {}
 
 	private static final Random RNG = new Random();
-	private static final float LASER_POWER = 0.3f;
+	private static final float LASER_POWER = 0.08f;
 	private static final int LASER_COOLDOWN_TICKS = 5;
-	private static final int BEAM_TICKS = 8;
+	private static final int BEAM_TICKS = 3;
 	private static final double BEAM_RANGE = 700.0;
 	private static final int MAX_ASTEROIDS = 40;
 	private static final int MAX_MOONS_PER_PLANET = 4;
@@ -33,7 +35,8 @@ final class SolarTools {
 	private static final double ASTEROID_ESCAPE = 4000.0;
 	private static final int SUBSTEPS = 4;
 
-	private static long lastLaser = Long.MIN_VALUE;
+	private static long lastLaser = -1000L;
+	private static int asteroidCount;
 
 	private SolarTools() {}
 
@@ -126,7 +129,9 @@ final class SolarTools {
 		}
 		Ray ray = cursorRay(mc, mouseX, mouseY);
 		switch (SolarView.tool) {
-			case LASER -> laser(mc, ray);
+			case LASER -> {
+				// fired from tick() while the button is held
+			}
 			case RING -> ring(mc, ray);
 			case MOON -> moon(mc, ray);
 			case ASTEROID -> asteroid(mc, ray);
@@ -135,30 +140,87 @@ final class SolarTools {
 		}
 	}
 
+	/** Rotation the renderer applies to planet {@code p} right now (local -> world). */
+	private static Quaternionf planetRotation(Minecraft mc, Planet p) {
+		double ticks = mc.level.getGameTime() + mc.getDeltaTracker().getGameTimeDeltaPartialTick(false);
+		float spin = (float) (p.spinAngleAt(ticks) % (2.0 * Math.PI));
+		return new Quaternionf().rotateZ(p.tilt()).rotateY(spin);
+	}
+
+	/** Distance along the ray to the planet's cube surface, or -1 on a miss. {@code inv} is world -> local. */
+	private static double cubeHit(Vec3 o, Vec3 d, Vec3 c, float radius, Quaternionf inv) {
+		Vector3f lo = new Vector3f((float) (o.x - c.x), (float) (o.y - c.y), (float) (o.z - c.z));
+		Vector3f ld = new Vector3f((float) d.x, (float) d.y, (float) d.z);
+		inv.transform(lo);
+		inv.transform(ld);
+		float tMin = Float.NEGATIVE_INFINITY;
+		float tMax = Float.POSITIVE_INFINITY;
+		for (int axis = 0; axis < 3; axis++) {
+			float oa = lo.get(axis);
+			float da = ld.get(axis);
+			if (Math.abs(da) < 1e-8f) {
+				if (Math.abs(oa) > radius) {
+					return -1.0;
+				}
+				continue;
+			}
+			float t1 = (-radius - oa) / da;
+			float t2 = (radius - oa) / da;
+			if (t1 > t2) {
+				float tmp = t1;
+				t1 = t2;
+				t2 = tmp;
+			}
+			tMin = Math.max(tMin, t1);
+			tMax = Math.min(tMax, t2);
+			if (tMin > tMax) {
+				return -1.0;
+			}
+		}
+		return tMin > 0.0f ? tMin : -1.0;
+	}
+
+	/** One laser tick: beam from just below the camera centre to the target, push + scorch on a planet. */
 	private static void laser(Minecraft mc, Ray ray) {
 		long now = mc.level.getGameTime();
-		if (now - lastLaser < LASER_COOLDOWN_TICKS) {
-			return;
-		}
-		lastLaser = now;
 		SolarSystem sys = SolarSystemClient.system();
 		Hit hit = pick(ray.origin(), ray.dir());
 		double end = BEAM_RANGE;
-		boolean planetHit = false;
+		Planet target = null;
+		Vector3f local = null;
 		if (hit.planet() >= 0) {
-			double t = sphereHit(ray.origin(), ray.dir(), planetVisual(hit.planet()), SolarView.radiusOf(sys.planets().get(hit.planet())));
-			end = t > 0.0 ? t : hit.t();
-			planetHit = true;
+			target = sys.planets().get(hit.planet());
+			Vec3 c = planetVisual(target.index());
+			float radius = SolarView.radiusOf(target);
+			Quaternionf inv = planetRotation(mc, target).conjugate();
+			double t = cubeHit(ray.origin(), ray.dir(), c, radius, inv);
+			if (t > 0.0) {
+				end = t;
+				local = new Vector3f((float) (ray.origin().x + ray.dir().x * t - c.x), (float) (ray.origin().y + ray.dir().y * t - c.y),
+						(float) (ray.origin().z + ray.dir().z * t - c.z));
+				inv.transform(local);
+			} else {
+				end = hit.t();
+			}
 		}
 		double sunT = sphereHit(ray.origin(), ray.dir(), SolarSystem.SUN_CENTER, SolarSystem.SUN_RADIUS);
 		if (sunT > 0.0 && sunT < end) {
 			end = sunT;
-			planetHit = false;
+			target = null;
+			local = null;
 		}
-		if (planetHit) {
-			ClientPlayNetworking.send(new LaunchPayload(hit.planet(), (float) ray.dir().x, (float) ray.dir().y, (float) ray.dir().z, LASER_POWER));
+		if (target != null) {
+			if (now - lastLaser >= LASER_COOLDOWN_TICKS) {
+				lastLaser = now;
+				ClientPlayNetworking.send(new LaunchPayload(target.index(), (float) ray.dir().x, (float) ray.dir().y, (float) ray.dir().z, LASER_POWER));
+			}
+			SolarSystemRenderer renderer = SolarSystemClient.renderer();
+			if (local != null && renderer != null) {
+				renderer.burn(target, local.x, local.y, local.z);
+			}
 		}
-		Vec3 from = ray.origin().add(ray.dir().scale(3.0)).subtract(ray.up().scale(2.2));
+		// starts slightly below the screen centre so it never covers the target
+		Vec3 from = ray.origin().add(ray.dir().scale(2.5)).subtract(ray.up().scale(1.1));
 		Vec3 to = ray.origin().add(ray.dir().scale(end));
 		SolarView.beams.add(new SolarView.Beam(new float[] {(float) from.x, (float) from.y, (float) from.z, (float) to.x, (float) to.y, (float) to.z}, BEAM_TICKS));
 	}
@@ -227,7 +289,8 @@ final class SolarTools {
 		double speed = Math.sqrt(phys.gmSun() / real) * (0.85 + 0.3 * RNG.nextDouble());
 		float ax = RNG.nextFloat() - 0.5f, ay = RNG.nextFloat() - 0.5f, az = RNG.nextFloat() - 0.5f;
 		float al = (float) Math.sqrt(ax * ax + ay * ay + az * az) + 1e-4f;
-		SolarView.Asteroid a = new SolarView.Asteroid(1.1f + RNG.nextFloat() * 1.3f, 0.02f + RNG.nextFloat() * 0.05f, ax / al, ay / al, az / al);
+		int color = java.awt.Color.HSBtoRGB((asteroidCount++ * 0.61803f) % 1.0f, 0.7f, 1.0f) & 0xFFFFFF;
+		SolarView.Asteroid a = new SolarView.Asteroid(color, 1.1f + RNG.nextFloat() * 1.3f, 0.02f + RNG.nextFloat() * 0.05f, ax / al, ay / al, az / al);
 		a.p[0] = rx;
 		a.p[1] = ry;
 		a.p[2] = rz;
@@ -245,6 +308,10 @@ final class SolarTools {
 	/** Advances beams and asteroids by one game tick. */
 	static void tick(Minecraft mc, SolarPhysics phys, SolarSystem sys) {
 		SolarView.beams.removeIf(b -> --b.ticksLeft <= 0);
+		if (SolarView.laserHeld && SolarView.tool == SolarView.Tool.LASER && SolarView.mode == SolarView.Mode.FREE
+				&& mc.gui.screen() instanceof ToolbarScreen) {
+			laser(mc, cursorRay(mc, mc.mouseHandler.getScaledXPos(mc.getWindow()), mc.mouseHandler.getScaledYPos(mc.getWindow())));
+		}
 
 		List<SolarView.Asteroid> list = SolarView.asteroids;
 		if (list.isEmpty()) {
@@ -259,6 +326,7 @@ final class SolarTools {
 			for (int s = 0; s < SUBSTEPS; s++) {
 				step(a, gm, dt);
 			}
+			a.recordTrail();
 			double r = Math.sqrt(a.p[0] * a.p[0] + a.p[1] * a.p[1] + a.p[2] * a.p[2]);
 			if (r < SolarSystem.SUN_RADIUS * 1.05 || r > ASTEROID_ESCAPE || !Double.isFinite(r)) {
 				it.remove();
