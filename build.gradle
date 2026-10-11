@@ -29,6 +29,9 @@ dependencies {
 
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// UI Lib (DAQEM) - the toolbar is built with it. Jar lives in libs/ ; players install the UI Lib mod.
+	implementation files("libs/uilib-fabric-21_1_2.jar")
 }
 
 processResources {

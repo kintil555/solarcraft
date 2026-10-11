@@ -53,6 +53,16 @@ public final class SolarSystemRenderer {
 	private final int[] starColors = new int[STAR_COUNT];
 	private final float[] orbitBuffer = new float[(ORBIT_SEGMENTS + 1) * 3];
 
+	private static final int RING_PARTICLES = 260;
+	private static final int MODE_ROCK_CELLS = 3;
+
+	private final BodyMesh rockMesh = BodyMesh.cube(MODE_ROCK_CELLS);
+	private final java.util.Map<Integer, float[]> ringData = new java.util.HashMap<>();
+	private float partialTick;
+
+	/** One thing to draw this frame, sorted far -> near with the others. */
+	private record Item(double dist, Runnable draw) {}
+
 	private final Vector3f tmp = new Vector3f();
 	private final Quaternionf rot = new Quaternionf();
 	private final Quaternionf identity = new Quaternionf();
@@ -72,6 +82,10 @@ public final class SolarSystemRenderer {
 				Painter.paintPlanet(p, mesh);
 			}
 			planetMeshes[p.index()] = mesh;
+		}
+		for (int c = 0; c < rockMesh.cells; c++) {
+			float g = 105.0f + 70.0f * Noise.value(rockMesh.normals[c * 3] * 3.1f, rockMesh.normals[c * 3 + 1] * 3.1f, rockMesh.normals[c * 3 + 2] * 3.1f, 7 + c);
+			rockMesh.colors[c] = Painter.rgb(g * 1.04f, g * 0.97f, g * 0.9f, 255);
 		}
 		buildStars(system.seed());
 	}
@@ -156,6 +170,7 @@ public final class SolarSystemRenderer {
 		Vec3 cam = context.levelState().cameraRenderState.pos;
 		float partial = Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false);
 		double ticks = gameTime + partial;
+		this.partialTick = partial;
 		SolarPhysics phys = SolarSystemClient.physics();
 		double age = SolarSystemClient.syncAge(partial);
 		SolarSystemClient.Preview preview = SolarSystemClient.preview();
@@ -170,20 +185,19 @@ public final class SolarSystemRenderer {
 
 	private void draw(VertexConsumer vc, PoseStack.Pose pose, float cx, float cy, float cz, double ticks,
 					  SolarPhysics phys, double age, SolarSystemClient.Preview preview) {
+		RadialMap map = SolarView.map(system);
 		int n = system.planets().size();
 		double[][] pos = new double[n][3];
 		double[] dist = new double[n];
 		for (int i = 0; i < n; i++) {
-			pos[i][0] = SolarSystem.SUN_CENTER.x + phys.px(i) + phys.vx(i) * age;
-			pos[i][1] = SolarSystem.SUN_CENTER.y + phys.py(i) + phys.vy(i) * age;
-			pos[i][2] = SolarSystem.SUN_CENTER.z + phys.pz(i) + phys.vz(i) * age;
+			SolarView.toVisual(map, phys.px(i) + phys.vx(i) * age, phys.py(i) + phys.vy(i) * age, phys.pz(i) + phys.vz(i) * age, pos[i]);
 			dist[i] = Math.sqrt(sq(pos[i][0] - cx) + sq(pos[i][1] - cy) + sq(pos[i][2] - cz));
 		}
 
 		drawStars(vc, pose, cx, cy, cz);
 
 		for (int i = 0; i < n; i++) {
-			int count = orbit(phys, i, age);
+			int count = orbit(phys, i, age, map);
 			if (count > 1) {
 				int color = preview != null && preview.planet() == i ? SELECTED_ORBIT_COLOR
 						: system.planets().get(i).kind() == Kind.EARTH ? EARTH_ORBIT_COLOR : ORBIT_COLOR;
@@ -191,26 +205,153 @@ public final class SolarSystemRenderer {
 			}
 		}
 
-		// Bodies far -> near (no depth writes, so draw order matters between bodies).
-		List<Planet> order = new ArrayList<>(system.planets());
-		order.sort((a, b) -> Double.compare(dist[b.index()], dist[a.index()]));
-		float sunX = (float) SolarSystem.SUN_CENTER.x, sunY = (float) SolarSystem.SUN_CENTER.y, sunZ = (float) SolarSystem.SUN_CENTER.z;
+		// Everything is drawn far -> near (no depth writes, so draw order matters between bodies).
+		final float sunX = (float) SolarSystem.SUN_CENTER.x, sunY = (float) SolarSystem.SUN_CENTER.y, sunZ = (float) SolarSystem.SUN_CENTER.z;
+		List<Item> items = new ArrayList<>();
 		double sunDist = Math.sqrt(sq(sunX - cx) + sq(sunY - cy) + sq(sunZ - cz));
-		boolean sunDrawn = false;
-		for (Planet p : order) {
-			if (!sunDrawn && sunDist >= dist[p.index()]) {
-				drawSun(vc, pose, cx, cy, cz, ticks, sunX, sunY, sunZ);
-				sunDrawn = true;
+		items.add(new Item(sunDist, () -> drawSun(vc, pose, cx, cy, cz, ticks, sunX, sunY, sunZ)));
+
+		for (Planet p : system.planets()) {
+			final double[] pp = pos[p.index()];
+			final double pd = dist[p.index()];
+			final float radius = SolarView.radiusOf(p);
+			items.add(new Item(pd, () -> drawPlanet(vc, pose, p, pp, radius, ticks, cx, cy, cz, sunX, sunY, sunZ)));
+			if (SolarView.hasRing(p)) {
+				items.add(new Item(pd + 0.001, () -> drawRing(vc, pose, p, pp, radius, ticks, cx, cy, cz, sunX, sunY, sunZ, pd, false)));
+				items.add(new Item(pd - 0.001, () -> drawRing(vc, pose, p, pp, radius, ticks, cx, cy, cz, sunX, sunY, sunZ, pd, true)));
 			}
-			drawPlanet(vc, pose, p, pos[p.index()], ticks, cx, cy, cz, sunX, sunY, sunZ);
 		}
-		if (!sunDrawn) {
-			drawSun(vc, pose, cx, cy, cz, ticks, sunX, sunY, sunZ);
+		for (SolarView.Moon m : SolarView.moons) {
+			if (m.planet() >= n) {
+				continue;
+			}
+			double a = m.phase() + 2.0 * Math.PI * ticks / m.period();
+			double[] c = pos[m.planet()];
+			final double[] mp = {
+					c[0] + Math.cos(a) * m.orbit(),
+					c[1] + Math.sin(a) * Math.sin(m.incline()) * m.orbit(),
+					c[2] + Math.sin(a) * Math.cos(m.incline()) * m.orbit()};
+			double md = Math.sqrt(sq(mp[0] - cx) + sq(mp[1] - cy) + sq(mp[2] - cz));
+			items.add(new Item(md, () -> {
+				rot.identity().rotateY((float) (ticks * 0.004));
+				emitBody(vc, pose, rockMesh, rockMesh.colors, rot, (float) mp[0], (float) mp[1], (float) mp[2], m.size(),
+						cx, cy, cz, MODE_SHADED, 0.1f, sunX, sunY, sunZ);
+			}));
+		}
+		double[] av = new double[3];
+		for (SolarView.Asteroid a : SolarView.asteroids) {
+			SolarView.toVisual(map, a.p[0] + a.v[0] * partialTick, a.p[1] + a.v[1] * partialTick, a.p[2] + a.v[2] * partialTick, av);
+			final double[] ap = av.clone();
+			double ad = Math.sqrt(sq(ap[0] - cx) + sq(ap[1] - cy) + sq(ap[2] - cz));
+			items.add(new Item(ad, () -> {
+				rot.identity().rotateAxis((float) (ticks * a.spin), a.ax, a.ay, a.az);
+				emitBody(vc, pose, rockMesh, rockMesh.colors, rot, (float) ap[0], (float) ap[1], (float) ap[2], a.size,
+						cx, cy, cz, MODE_SHADED, 0.1f, sunX, sunY, sunZ);
+			}));
+		}
+		items.sort((x, y) -> Double.compare(y.dist(), x.dist()));
+		for (Item item : items) {
+			item.draw().run();
 		}
 
-		if (preview != null) {
-			drawPreview(vc, pose, preview, cx, cy, cz);
+		for (SolarView.Beam b : SolarView.beams) {
+			drawBeam(vc, pose, b, cx, cy, cz);
 		}
+		if (preview != null) {
+			drawPreview(vc, pose, preview, map, cx, cy, cz);
+		}
+	}
+
+	private void drawBeam(VertexConsumer vc, PoseStack.Pose pose, SolarView.Beam b, float cx, float cy, float cz) {
+		float life = Math.max(0.0f, (b.ticksLeft - partialTick) / b.maxTicks);
+		int alpha = (int) (230 * life);
+		drawPolyline(vc, pose, b.pts, 2, (alpha / 2 << 24) | 0xFF3050, cx, cy, cz, 0.004f, 0.4f, false, false);
+		drawPolyline(vc, pose, b.pts, 2, (alpha << 24) | 0xFFE0E0, cx, cy, cz, 0.0016f, 0.15f, false, false);
+	}
+
+	/** Particle ring in the planet's equatorial plane; the half behind the planet is drawn before it. */
+	private void drawRing(VertexConsumer vc, PoseStack.Pose pose, Planet p, double[] pos, float radius, double ticks,
+						  float cx, float cy, float cz, float sunX, float sunY, float sunZ, double planetDist, boolean front) {
+		float[] data = ringData.computeIfAbsent(p.index(), i -> buildRing(p));
+		int base = switch (p.kind()) {
+			case GAS -> 0xD8C49A;
+			case ICE -> 0xBFE3EE;
+			default -> 0xB8B0A8;
+		};
+		rot.identity().rotateZ(p.tilt());
+		tmp.set(1.0f, 0.0f, 0.0f);
+		rot.transform(tmp);
+		float e1x = tmp.x, e1y = tmp.y, e1z = tmp.z;
+		tmp.set(0.0f, 0.0f, 1.0f);
+		rot.transform(tmp);
+		float e2x = tmp.x, e2y = tmp.y, e2z = tmp.z;
+
+		float lx = sunX - (float) pos[0], ly = sunY - (float) pos[1], lz = sunZ - (float) pos[2];
+		float ll = (float) Math.sqrt(lx * lx + ly * ly + lz * lz);
+		lx /= ll;
+		ly /= ll;
+		lz /= ll;
+
+		for (int i = 0; i < RING_PARTICLES; i++) {
+			int o = i * 4;
+			float rf = data[o + 1];
+			float ang = (float) (data[o] + ticks * 0.0012 / (rf * Math.sqrt(rf)));
+			float c = (float) Math.cos(ang) * rf * radius, s = (float) Math.sin(ang) * rf * radius;
+			float rx = e1x * c + e2x * s, ry = e1y * c + e2y * s, rz = e1z * c + e2z * s;
+			float x = (float) pos[0] + rx, y = (float) pos[1] + ry, z = (float) pos[2] + rz;
+
+			float tx = cx - x, ty = cy - y, tz = cz - z;
+			float tl = (float) Math.sqrt(tx * tx + ty * ty + tz * tz);
+			if (tl < 1e-3f || (tl < planetDist) != front) {
+				continue;
+			}
+			float k = 1.0f;
+			float along = rx * lx + ry * ly + rz * lz;
+			if (along < 0.0f && rx * rx + ry * ry + rz * rz - along * along < radius * radius) {
+				k = 0.2f; // in the planet's shadow
+			}
+			k *= data[o + 3];
+
+			tx /= tl;
+			ty /= tl;
+			tz /= tl;
+			// camera-facing square: u = toCamera x up, v = toCamera x u
+			float ux = -tz, uy = 0.0f, uz = tx; // toCamera x up(0,1,0)
+			float ul = (float) Math.sqrt(ux * ux + uy * uy + uz * uz);
+			if (ul < 1e-4f) {
+				ux = 1.0f;
+				uy = 0.0f;
+				uz = 0.0f;
+				ul = 1.0f;
+			}
+			float half = Math.max(0.15f, radius * 0.04f * data[o + 2]);
+			ux = ux / ul * half;
+			uy = uy / ul * half;
+			uz = uz / ul * half;
+			float vx = ty * uz - tz * uy, vy = tz * ux - tx * uz, vz = tx * uy - ty * ux;
+			int color = Painter.rgb(((base >> 16) & 0xFF) * k, ((base >> 8) & 0xFF) * k, (base & 0xFF) * k, 215);
+			vc.addVertex(pose, x - ux - vx, y - uy - vy, z - uz - vz).setColor(color);
+			vc.addVertex(pose, x + ux - vx, y + uy - vy, z + uz - vz).setColor(color);
+			vc.addVertex(pose, x + ux + vx, y + uy + vy, z + uz + vz).setColor(color);
+			vc.addVertex(pose, x - ux + vx, y - uy + vy, z - uz + vz).setColor(color);
+		}
+	}
+
+	/** {angle, radius factor, size, brightness} per ring particle, with a gap like the Cassini division. */
+	private static float[] buildRing(Planet p) {
+		Random r = new Random(p.seed() ^ 0x71C6L);
+		float[] d = new float[RING_PARTICLES * 4];
+		for (int i = 0; i < RING_PARTICLES; i++) {
+			float rf;
+			do {
+				rf = 1.45f + r.nextFloat();
+			} while (rf > 1.88f && rf < 1.97f);
+			d[i * 4] = r.nextFloat() * (float) (2.0 * Math.PI);
+			d[i * 4 + 1] = rf;
+			d[i * 4 + 2] = 0.55f + 0.9f * r.nextFloat();
+			d[i * 4 + 3] = 0.65f + 0.35f * r.nextFloat();
+		}
+		return d;
 	}
 
 	private static double sq(double v) {
@@ -221,7 +362,7 @@ public final class SolarSystemRenderer {
 	 * Osculating orbit of planet {@code i} around the Sun (the path it would follow if only the Sun pulled on
 	 * it), written to {@link #orbitBuffer} in world coordinates. Returns the number of points.
 	 */
-	private int orbit(SolarPhysics phys, int i, double age) {
+	private int orbit(SolarPhysics phys, int i, double age, RadialMap map) {
 		double mu = phys.gmSun();
 		double rx = phys.px(i) + phys.vx(i) * age, ry = phys.py(i) + phys.vy(i) * age, rz = phys.pz(i) + phys.vz(i) * age;
 		double vx = phys.vx(i), vy = phys.vy(i), vz = phys.vz(i);
@@ -274,6 +415,13 @@ public final class SolarSystemRenderer {
 			orbitBuffer[s * 3] = (float) (SolarSystem.SUN_CENTER.x + c * px + sn * qx);
 			orbitBuffer[s * 3 + 1] = (float) (SolarSystem.SUN_CENTER.y + c * py + sn * qy);
 			orbitBuffer[s * 3 + 2] = (float) (SolarSystem.SUN_CENTER.z + c * pz + sn * qz);
+			if (map != null) {
+				double ox = c * px + sn * qx, oy = c * py + sn * qy, oz = c * pz + sn * qz;
+				double ks = map.scale(Math.sqrt(ox * ox + oy * oy + oz * oz));
+				orbitBuffer[s * 3] = (float) (SolarSystem.SUN_CENTER.x + ox * ks);
+				orbitBuffer[s * 3 + 1] = (float) (SolarSystem.SUN_CENTER.y + oy * ks);
+				orbitBuffer[s * 3 + 2] = (float) (SolarSystem.SUN_CENTER.z + oz * ks);
+			}
 		}
 		return count;
 	}
@@ -288,13 +436,13 @@ public final class SolarSystemRenderer {
 		emitBody(vc, pose, haloMesh, halo2, rot, sx, sy, sz, SolarSystem.SUN_RADIUS * 1.32f, cx, cy, cz, MODE_FLAT, 1.0f, 0, 0, 0);
 	}
 
-	private void drawPlanet(VertexConsumer vc, PoseStack.Pose pose, Planet p, double[] pos, double ticks,
+	private void drawPlanet(VertexConsumer vc, PoseStack.Pose pose, Planet p, double[] pos, float radius, double ticks,
 							float cx, float cy, float cz, float sx, float sy, float sz) {
 		float spin = (float) (p.spinAngleAt(ticks) % (2.0 * Math.PI));
 		rot.identity().rotateZ(p.tilt()).rotateY(spin);
 		float ambient = p.kind() == Kind.EARTH ? 0.10f : 0.08f;
 		BodyMesh mesh = planetMeshes[p.index()];
-		emitBody(vc, pose, mesh, mesh.colors, rot, (float) pos[0], (float) pos[1], (float) pos[2], p.radius(),
+		emitBody(vc, pose, mesh, mesh.colors, rot, (float) pos[0], (float) pos[1], (float) pos[2], radius,
 				cx, cy, cz, MODE_SHADED, ambient, sx, sy, sz);
 	}
 
@@ -343,19 +491,30 @@ public final class SolarSystemRenderer {
 		}
 	}
 
-	private void drawPreview(VertexConsumer vc, PoseStack.Pose pose, SolarSystemClient.Preview preview, float cx, float cy, float cz) {
+	private void drawPreview(VertexConsumer vc, PoseStack.Pose pose, SolarSystemClient.Preview preview, RadialMap map,
+							 float cx, float cy, float cz) {
 		SolarPhysics.Prediction pred = preview.prediction();
+		float[] points = new float[pred.count() * 3];
+		double[] v = new double[3];
+		for (int i = 0; i < pred.count(); i++) {
+			SolarView.toVisual(map, pred.points()[i * 3] - SolarSystem.SUN_CENTER.x, pred.points()[i * 3 + 1] - SolarSystem.SUN_CENTER.y,
+					pred.points()[i * 3 + 2] - SolarSystem.SUN_CENTER.z, v);
+			points[i * 3] = (float) v[0];
+			points[i * 3 + 1] = (float) v[1];
+			points[i * 3 + 2] = (float) v[2];
+		}
 		float power = preview.power();
 		int r = (int) (80 + 175 * power), g = (int) (255 - 175 * power);
 		int color = (0xE6 << 24) | (r << 16) | (g << 8) | 0x5A;
-		drawPolyline(vc, pose, pred.points(), pred.count(), color, cx, cy, cz, 0.0035f, 0.2f, true, true);
+		drawPolyline(vc, pose, points, pred.count(), color, cx, cy, cz, 0.0035f, 0.2f, true, true);
 
 		// aim arrow from the planet along the launch direction
-		float radius = system.planets().get(preview.planet()).radius();
+		float radius = SolarView.radiusOf(system.planets().get(preview.planet()));
 		float len = radius * (2.5f + 9.0f * power);
-		float ax = (float) (SolarSystem.SUN_CENTER.x + preview.from()[0]);
-		float ay = (float) (SolarSystem.SUN_CENTER.y + preview.from()[1]);
-		float az = (float) (SolarSystem.SUN_CENTER.z + preview.from()[2]);
+		SolarView.toVisual(map, preview.from()[0], preview.from()[1], preview.from()[2], v);
+		float ax = (float) v[0];
+		float ay = (float) v[1];
+		float az = (float) v[2];
 		float[] arrow = {ax, ay, az, ax + (float) preview.dir().x * len, ay + (float) preview.dir().y * len, az + (float) preview.dir().z * len};
 		drawPolyline(vc, pose, arrow, 2, color | 0xFF000000, cx, cy, cz, 0.0f, radius * 0.18f, false, false);
 	}

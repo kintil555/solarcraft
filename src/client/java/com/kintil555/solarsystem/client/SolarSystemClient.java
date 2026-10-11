@@ -26,6 +26,8 @@ public final class SolarSystemClient implements ClientModInitializer {
 	record Preview(int planet, float power, Vec3 dir, SolarPhysics.Prediction prediction, double[] from) {}
 
 	private static final int KEY_R = 82;
+	private static final int KEY_G = 71;
+	private static final int KEY_V = 86;
 	private static final float FULL_CHARGE_TICKS = 60.0f;
 	private static final int PREVIEW_HORIZON = 9000;
 	private static final int PREVIEW_EVERY = 30;
@@ -38,6 +40,8 @@ public final class SolarSystemClient implements ClientModInitializer {
 	private static long clientTick;
 	private static long rxTick;
 	private static KeyMapping launchKey;
+	private static KeyMapping toolbarKey;
+	private static KeyMapping cameraKey;
 
 	private static boolean charging;
 	private static int selected = -1;
@@ -59,6 +63,18 @@ public final class SolarSystemClient implements ClientModInitializer {
 		return preview;
 	}
 
+	static KeyMapping launchKey() {
+		return launchKey;
+	}
+
+	static KeyMapping toolbarKey() {
+		return toolbarKey;
+	}
+
+	static KeyMapping cameraKey() {
+		return cameraKey;
+	}
+
 	/** Ticks since the last server state (for smooth extrapolation). */
 	static double syncAge(float partial) {
 		return Math.max(0.0, Math.min(3.0, clientTick - rxTick + partial));
@@ -68,8 +84,13 @@ public final class SolarSystemClient implements ClientModInitializer {
 	public void onInitializeClient() {
 		launchKey = KeyMappingHelper.registerKeyMapping(
 				new KeyMapping("key.solarsystem.launch", InputConstants.Type.KEYSYM, KEY_R, KeyMapping.Category.GAMEPLAY));
+		toolbarKey = KeyMappingHelper.registerKeyMapping(
+				new KeyMapping("key.solarsystem.toolbar", InputConstants.Type.KEYSYM, KEY_G, KeyMapping.Category.GAMEPLAY));
+		cameraKey = KeyMappingHelper.registerKeyMapping(
+				new KeyMapping("key.solarsystem.camera", InputConstants.Type.KEYSYM, KEY_V, KeyMapping.Category.GAMEPLAY));
 
 		ClientPlayNetworking.registerGlobalReceiver(SeedPayload.TYPE, (payload, context) -> {
+			SolarView.reset();
 			SolarSystem s = SolarSystem.generate(payload.seed());
 			long time = Minecraft.getInstance().level != null ? Minecraft.getInstance().level.getGameTime() : 0L;
 			system = s;
@@ -90,6 +111,7 @@ public final class SolarSystemClient implements ClientModInitializer {
 			physics = null;
 			preview = null;
 			charging = false;
+			SolarView.reset();
 		});
 		ClientTickEvents.END_CLIENT_TICK.register(SolarSystemClient::onTick);
 		LevelRenderEvents.COLLECT_SUBMITS.register(SolarSystemRenderer::onCollectSubmits);
@@ -101,8 +123,28 @@ public final class SolarSystemClient implements ClientModInitializer {
 		ClientLevel level = mc.level;
 		SolarPhysics phys = physics;
 		SolarSystem sys = system;
-		if (player == null || level == null || phys == null || sys == null
-				|| !level.dimensionTypeRegistration().is(SolarSystemMod.SPACE_TYPE) || mc.gui.screen() != null) {
+		boolean inSpace = player != null && level != null && phys != null && sys != null
+				&& level.dimensionTypeRegistration().is(SolarSystemMod.SPACE_TYPE);
+		if (inSpace) {
+			SolarTools.tick(mc, phys, sys);
+			if (SolarView.mode == SolarView.Mode.FREE && !(mc.gui.screen() instanceof ToolbarScreen)) {
+				SolarView.setMode(SolarView.Mode.EXPLORE);
+			}
+			while (toolbarKey.consumeClick()) {
+				if (mc.gui.screen() == null) {
+					mc.gui.setScreen(new ToolbarScreen());
+				}
+			}
+			while (cameraKey.consumeClick()) {
+				if (mc.gui.screen() == null) {
+					SolarView.setMode(SolarView.Mode.FREE);
+					mc.gui.setScreen(new ToolbarScreen());
+				}
+			}
+		} else if (SolarView.mode == SolarView.Mode.FREE) {
+			SolarView.setMode(SolarView.Mode.EXPLORE);
+		}
+		if (!inSpace || mc.gui.screen() != null) {
 			charging = false;
 			preview = null;
 			return;
@@ -114,7 +156,7 @@ public final class SolarSystemClient implements ClientModInitializer {
 
 		if (down) {
 			if (!charging) {
-				int pick = pick(player, now, sys);
+				int pick = SolarTools.pick(player.getEyePosition(), player.getViewVector(1.0f).normalize()).planet();
 				if (pick >= 0) {
 					charging = true;
 					selected = pick;
@@ -142,29 +184,5 @@ public final class SolarSystemClient implements ClientModInitializer {
 			charging = false;
 			preview = null;
 		}
-	}
-
-	/** The planet under the crosshair (generous aim cone), or -1. */
-	private static int pick(LocalPlayer player, SolarPhysics now, SolarSystem sys) {
-		Vec3 o = player.getEyePosition();
-		Vec3 d = player.getViewVector(1.0f).normalize();
-		int best = -1;
-		double bestT = Double.MAX_VALUE;
-		for (int i = 0; i < now.count(); i++) {
-			double rx = SolarSystem.SUN_CENTER.x + now.px(i) - o.x;
-			double ry = SolarSystem.SUN_CENTER.y + now.py(i) - o.y;
-			double rz = SolarSystem.SUN_CENTER.z + now.pz(i) - o.z;
-			double t = rx * d.x + ry * d.y + rz * d.z;
-			if (t <= 0.0) {
-				continue;
-			}
-			double perp2 = rx * rx + ry * ry + rz * rz - t * t;
-			double limit = sys.planets().get(i).radius() * 1.7 + t * 0.05;
-			if (perp2 < limit * limit && t < bestT) {
-				best = i;
-				bestT = t;
-			}
-		}
-		return best;
 	}
 }

@@ -1,3 +1,5 @@
 {
-  "key.solarsystem.launch": "Launch planet (look at it, hold, release)"
+  "key.solarsystem.launch": "Launch planet (look at it, hold, release)",
+  "key.solarsystem.toolbar": "Open / close solar toolbar",
+  "key.solarsystem.camera": "Toggle Free / Explore camera"
 }
