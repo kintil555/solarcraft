@@ -11,6 +11,7 @@ import net.minecraft.world.phys.Vec3;
 
 import com.kintil555.solarsystem.system.SolarSystem;
 import com.kintil555.solarsystem.system.SolarSystem.Planet;
+import com.kintil555.solarsystem.system.StellarState;
 
 /** Client-side view state: camera mode, solar style, selected tool and the objects the tools created. */
 final class SolarView {
@@ -71,6 +72,29 @@ final class SolarView {
 		}
 	}
 
+	/** A short-lived explosion flash: two expanding translucent shells at a world position. */
+	static final class Blast {
+		final double x;
+		final double y;
+		final double z;
+		final float r0;
+		final float r1;
+		final int color;
+		final int maxTicks;
+		int ticksLeft;
+
+		Blast(double x, double y, double z, float r0, float r1, int color, int ticks) {
+			this.x = x;
+			this.y = y;
+			this.z = z;
+			this.r0 = r0;
+			this.r1 = r1;
+			this.color = color;
+			this.maxTicks = ticks;
+			this.ticksLeft = ticks;
+		}
+	}
+
 	static Mode mode = Mode.EXPLORE;
 	static SolarStyle style = SolarStyle.ENLARGED;
 	static Tool tool = Tool.NONE;
@@ -83,6 +107,7 @@ final class SolarView {
 	static final List<Moon> moons = new ArrayList<>();
 	static final List<Asteroid> asteroids = new ArrayList<>();
 	static final List<Beam> beams = new ArrayList<>();
+	static final List<Blast> blasts = new ArrayList<>();
 
 	private static SolarStyle cachedStyle;
 	private static SolarSystem cachedSystem;
@@ -105,6 +130,19 @@ final class SolarView {
 		out[0] = SolarSystem.SUN_CENTER.x + rx * s;
 		out[1] = SolarSystem.SUN_CENTER.y + ry * s;
 		out[2] = SolarSystem.SUN_CENTER.z + rz * s;
+	}
+
+	/**
+	 * Displayed radius of the (possibly grown) Sun, 0 once it is gone. The growth is run through the radial map so
+	 * the surface reaches a planet's displayed position at the moment the planet is swallowed.
+	 */
+	static float sunVisualRadius(RadialMap map, StellarState st) {
+		if (st.sunGone()) {
+			return 0.0f;
+		}
+		double base = SolarSystem.SUN_RADIUS;
+		double grow = map.map(st.sunRadius() * 1.1) - map.map(base * 1.1);
+		return (float) (base + Math.max(0.0, grow));
 	}
 
 	static float radiusOf(Planet p) {
@@ -148,6 +186,7 @@ final class SolarView {
 		moons.clear();
 		asteroids.clear();
 		beams.clear();
+		blasts.clear();
 		cachedMap = null;
 	}
 }

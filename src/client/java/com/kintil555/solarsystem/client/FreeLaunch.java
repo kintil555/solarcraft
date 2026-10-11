@@ -103,6 +103,10 @@ final class FreeLaunch {
 
 	/** Recomputes the trajectory preview at most once per tick. */
 	static void tick(SolarPhysics phys) {
+		if (selected >= 0 && selected < phys.count() && !phys.stellar().alive(selected)) {
+			clear();
+			return;
+		}
 		if (!dirty || !aiming || selected < 0 || dir == null || power <= 0.0f || selected >= phys.count()) {
 			return;
 		}

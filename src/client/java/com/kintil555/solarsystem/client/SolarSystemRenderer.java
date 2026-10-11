@@ -22,6 +22,7 @@ import com.kintil555.solarsystem.system.SolarPhysics;
 import com.kintil555.solarsystem.system.SolarSystem;
 import com.kintil555.solarsystem.system.SolarSystem.Kind;
 import com.kintil555.solarsystem.system.SolarSystem.Planet;
+import com.kintil555.solarsystem.system.StellarState;
 
 /**
  * Draws the solar system as flat-coloured quads with the unfogged debug-quad render type, so bodies stay visible
@@ -59,6 +60,8 @@ public final class SolarSystemRenderer {
 	private final BodyMesh rockMesh = BodyMesh.cube(MODE_ROCK_CELLS);
 	private final java.util.Map<Integer, float[]> ringData = new java.util.HashMap<>();
 	private float partialTick;
+	/** Draw the far (inner) faces instead of the near ones: for a shell the camera is inside of. */
+	private boolean cullInverted;
 
 	private static final float ROCK_BURN_RATE = 0.14f;
 	private static final float GAS_BURN_RATE = 0.014f;
@@ -243,7 +246,11 @@ public final class SolarSystemRenderer {
 
 		drawStars(vc, pose, cx, cy, cz);
 
+		final StellarState st = phys.stellar();
 		for (int i = 0; i < n; i++) {
+			if (!st.alive(i) || st.sunGone()) {
+				continue;
+			}
 			int count = orbit(phys, i, age, map);
 			if (count > 1) {
 				int color = preview != null && preview.planet() == i ? SELECTED_ORBIT_COLOR
@@ -256,9 +263,21 @@ public final class SolarSystemRenderer {
 		final float sunX = (float) SolarSystem.SUN_CENTER.x, sunY = (float) SolarSystem.SUN_CENTER.y, sunZ = (float) SolarSystem.SUN_CENTER.z;
 		List<Item> items = new ArrayList<>();
 		double sunDist = Math.sqrt(sq(sunX - cx) + sq(sunY - cy) + sq(sunZ - cz));
-		items.add(new Item(sunDist, () -> drawSun(vc, pose, cx, cy, cz, ticks, sunX, sunY, sunZ)));
+		final float sunRadius = SolarView.sunVisualRadius(map, st);
+		final float sunHeat = st.sunHeat();
+		if (!st.sunGone()) {
+			items.add(new Item(sunDist, () -> drawSun(vc, pose, cx, cy, cz, ticks, sunX, sunY, sunZ, sunRadius, sunHeat)));
+		} else if (st.shockActive()) {
+			final float shockRadius = (float) map.map(st.shock());
+			final float progress = st.shock() / StellarState.SHOCK_MAX;
+			final double key = sunDist < shockRadius ? sunDist + shockRadius : Math.max(0.0, sunDist - shockRadius);
+			items.add(new Item(key, () -> drawShock(vc, pose, shockRadius, progress, cx, cy, cz, sunX, sunY, sunZ)));
+		}
 
 		for (Planet p : system.planets()) {
+			if (!st.alive(p.index())) {
+				continue;
+			}
 			final double[] pp = pos[p.index()];
 			final double pd = dist[p.index()];
 			final float radius = SolarView.radiusOf(p);
@@ -274,7 +293,7 @@ public final class SolarSystemRenderer {
 			}
 		}
 		for (SolarView.Moon m : SolarView.moons) {
-			if (m.planet() >= n) {
+			if (m.planet() >= n || !st.alive(m.planet())) {
 				continue;
 			}
 			double a = m.phase() + 2.0 * Math.PI * ticks / m.period();
@@ -307,6 +326,9 @@ public final class SolarSystemRenderer {
 			item.draw().run();
 		}
 
+		for (SolarView.Blast b : SolarView.blasts) {
+			drawBlast(vc, pose, b, cx, cy, cz);
+		}
 		for (SolarView.Beam b : SolarView.beams) {
 			drawBeam(vc, pose, b, cx, cy, cz);
 		}
@@ -480,13 +502,58 @@ public final class SolarSystemRenderer {
 	}
 
 	private void drawSun(VertexConsumer vc, PoseStack.Pose pose, float cx, float cy, float cz, double ticks,
-						 float sx, float sy, float sz) {
+						 float sx, float sy, float sz, float radius, float heat) {
 		Painter.paintSun(sunMesh, sunColors, (float) ticks);
+		Painter.tintSun(sunColors, sunMesh.cells, heat);
+		float blue = Noise.smoothstep(0.2f, 0.85f, heat);
+		java.util.Arrays.fill(halo1, mix(0x26FFAA28, 0x263C8CFF, blue));
+		java.util.Arrays.fill(halo2, mix(0x14FF7814, 0x142860FF, blue));
+		// near the end the star pulses faster and faster
+		float pulse = heat > 0.7f ? 1.0f + 0.025f * (heat - 0.7f) / 0.3f * (float) Math.sin(ticks * (0.6 + 2.0 * heat)) : 1.0f;
+		float r = radius * pulse;
 		rot.identity().rotateY((float) (ticks * 0.0009)).rotateX(0.25f);
-		emitBody(vc, pose, sunMesh, sunColors, rot, sx, sy, sz, SolarSystem.SUN_RADIUS, cx, cy, cz, MODE_LIMB, 1.0f, 0, 0, 0);
+		emitBody(vc, pose, sunMesh, sunColors, rot, sx, sy, sz, r, cx, cy, cz, MODE_LIMB, 1.0f, 0, 0, 0);
 		rot.identity().rotateY((float) (ticks * 0.0009)).rotateX(0.25f);
-		emitBody(vc, pose, haloMesh, halo1, rot, sx, sy, sz, SolarSystem.SUN_RADIUS * 1.12f, cx, cy, cz, MODE_FLAT, 1.0f, 0, 0, 0);
-		emitBody(vc, pose, haloMesh, halo2, rot, sx, sy, sz, SolarSystem.SUN_RADIUS * 1.32f, cx, cy, cz, MODE_FLAT, 1.0f, 0, 0, 0);
+		emitBody(vc, pose, haloMesh, halo1, rot, sx, sy, sz, r * 1.12f, cx, cy, cz, MODE_FLAT, 1.0f, 0, 0, 0);
+		emitBody(vc, pose, haloMesh, halo2, rot, sx, sy, sz, r * 1.32f, cx, cy, cz, MODE_FLAT, 1.0f, 0, 0, 0);
+	}
+
+	/** Planet laser heat: base colour -> red (first half) -> yellow (second half). */
+	private static int heatTint(int base, float heat) {
+		if (heat <= 0.0f) {
+			return base;
+		}
+		if (heat < 0.5f) {
+			return mix(base, 0xE02010, Math.min(1.0f, heat / 0.5f) * 0.85f);
+		}
+		return mix(mix(base, 0xE02010, 0.85f), 0xFFE040, Math.min(1.0f, (heat - 0.5f) / 0.5f) * 0.92f);
+	}
+
+	/** Two expanding, fading shells (outer in the blast colour, inner white-hot). */
+	private void drawBlast(VertexConsumer vc, PoseStack.Pose pose, SolarView.Blast b, float cx, float cy, float cz) {
+		float p = 1.0f - Math.max(0.0f, (b.ticksLeft - partialTick) / b.maxTicks);
+		float ease = 1.0f - (1.0f - p) * (1.0f - p);
+		float radius = b.r0 + (b.r1 - b.r0) * ease;
+		float fade = (1.0f - p) * (float) Math.sqrt(1.0f - p);
+		java.util.Arrays.fill(halo1, (int) (190 * fade) << 24 | (b.color & 0xFFFFFF));
+		java.util.Arrays.fill(halo2, (int) (230 * fade) << 24 | 0xFFFFFF);
+		rot.identity();
+		emitBody(vc, pose, haloMesh, halo1, rot, (float) b.x, (float) b.y, (float) b.z, radius, cx, cy, cz, MODE_FLAT, 1.0f, 0, 0, 0);
+		emitBody(vc, pose, haloMesh, halo2, rot, (float) b.x, (float) b.y, (float) b.z, radius * 0.55f, cx, cy, cz, MODE_FLAT, 1.0f, 0, 0, 0);
+	}
+
+	/** The supernova shockwave: a big translucent blue-white shell, visible from inside too. */
+	private void drawShock(VertexConsumer vc, PoseStack.Pose pose, float visualRadius, float progress, float cx, float cy, float cz,
+						   float sx, float sy, float sz) {
+		float fade = Math.max(0.0f, 1.0f - progress);
+		java.util.Arrays.fill(halo1, (int) (120 * fade) << 24 | 0x9CC8FF);
+		java.util.Arrays.fill(halo2, (int) (90 * fade) << 24 | 0xFFFFFF);
+		double d = Math.sqrt(sq(cx - sx) + sq(cy - sy) + sq(cz - sz));
+		cullInverted = d < visualRadius;
+		rot.identity();
+		emitBody(vc, pose, haloMesh, halo1, rot, sx, sy, sz, visualRadius, cx, cy, cz, MODE_FLAT, 1.0f, 0, 0, 0);
+		emitBody(vc, pose, haloMesh, halo2, rot, sx, sy, sz, visualRadius * 0.97f, cx, cy, cz, MODE_FLAT, 1.0f, 0, 0, 0);
+		cullInverted = false;
 	}
 
 	private void drawPlanet(VertexConsumer vc, PoseStack.Pose pose, Planet p, double[] pos, float radius, double ticks,
@@ -498,13 +565,15 @@ public final class SolarSystemRenderer {
 		int[] colors = mesh.colors;
 		float[] sink = null;
 		float[] burn = burnData[p.index()];
-		if (burn != null) {
+		SolarPhysics phys = SolarSystemClient.physics();
+		float heat = phys != null ? phys.stellar().heat(p.index()) : 0.0f;
+		if (burn != null || heat > 0.0f) {
 			boolean solid = isSolid(p);
 			colors = colorScratch;
-			sink = solid ? null : sinkScratch;
+			sink = solid || burn == null ? null : sinkScratch;
 			for (int c = 0; c < mesh.cells; c++) {
 				int base = mesh.colors[c];
-				float v = burn[c];
+				float v = burn != null ? burn[c] : 0.0f;
 				if (sink != null) {
 					sink[c] = v * GAS_MAX_DEPTH;
 				}
@@ -516,7 +585,10 @@ public final class SolarSystemRenderer {
 				} else {
 					colors[c] = mix(base, 0x3A241A, Math.min(1.0f, v * 0.75f));
 				}
+				colors[c] = heatTint(colors[c], heat);
 			}
+			// the hotter it gets, the more it glows (less night-side darkness)
+			ambient = ambient + (1.0f - ambient) * 0.6f * Math.min(1.0f, heat * 1.2f);
 		}
 		emitBody(vc, pose, mesh, colors, rot, (float) pos[0], (float) pos[1], (float) pos[2], radius,
 				cx, cy, cz, MODE_SHADED, ambient, sx, sy, sz, sink);
@@ -648,6 +720,7 @@ public final class SolarSystemRenderer {
 						  float px, float py, float pz, float radius, float camX, float camY, float camZ,
 						  int mode, float ambient, float sunX, float sunY, float sunZ, float[] sink) {
 		float cullThreshold = m.cube ? -0.02f : -0.15f;
+		float cullSign = cullInverted ? -1.0f : 1.0f;
 		for (int c = 0; c < m.cells; c++) {
 			tmp.set(m.shade[c * 3], m.shade[c * 3 + 1], m.shade[c * 3 + 2]);
 			q.transform(tmp);
@@ -661,7 +734,7 @@ public final class SolarSystemRenderer {
 			if (tl < 1e-3f) {
 				continue;
 			}
-			float facing = (nx * tx + ny * ty + nz * tz) / tl;
+			float facing = cullSign * (nx * tx + ny * ty + nz * tz) / tl;
 			if (facing < cullThreshold) {
 				continue; // faces away from the camera
 			}

@@ -67,6 +67,23 @@ final class Painter {
 	}
 
 	/** Animated surface colours of the Sun (granulation, sunspots). */
+	/** Turns the painted Sun colours yellow -> white-blue -> blue as laser heat (0..1) rises. */
+	static void tintSun(int[] colors, int cells, float heat) {
+		float t = Noise.smoothstep(0.2f, 0.85f, heat);
+		if (t <= 0.0f) {
+			return;
+		}
+		for (int c = 0; c < cells; c++) {
+			int base = colors[c];
+			float r = (base >> 16) & 0xFF, g = (base >> 8) & 0xFF, b = base & 0xFF;
+			float lum = (r * 0.3f + g * 0.59f + b * 0.11f) / 255.0f;
+			float tr = 20.0f + 140.0f * lum * lum;
+			float tg = 70.0f + 140.0f * lum;
+			float tb = 235.0f + 20.0f * lum;
+			colors[c] = rgb(r + (tr - r) * t, g + (tg - g) * t, b + (tb - b) * t, 255);
+		}
+	}
+
 	static void paintSun(BodyMesh m, int[] out, float ticks) {
 		float t = ticks * 0.0016f;
 		for (int c = 0; c < m.cells; c++) {

@@ -64,7 +64,7 @@ final class ToolbarPanel extends AbstractComponent {
 					: "Explore: terbang seperti biasa. Pilih Free untuk kamera orbit dengan kursor.";
 			case TOOLS -> switch (SolarView.tool) {
 				case NONE -> "Pilih sebuah tool, lalu klik planet atau ruang kosong di dunia.";
-				case LASER -> "Laser: tahan klik kiri pada planet. Planet batu hangus, planet gas terkikis ke dalam.";
+				case LASER -> "Laser: tahan klik kiri. Matahari membesar, membiru, lalu supernova. Planet memerah, menguning, lalu meledak (permanen).";
 				case RING -> "Planet Ring: klik planet untuk memasang atau melepas cincin partikel.";
 				case ASTEROID -> "Asteroid: klik di bidang orbit untuk melepas asteroid yang mengorbit Matahari.";
 				case MOON -> "Moon: klik planet untuk menambah bulan (maksimal 4 per planet).";

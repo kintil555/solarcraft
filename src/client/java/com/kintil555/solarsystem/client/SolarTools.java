@@ -12,6 +12,7 @@ import net.minecraft.world.phys.Vec3;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
+import com.kintil555.solarsystem.LaserPayload;
 import com.kintil555.solarsystem.LaunchPayload;
 import com.kintil555.solarsystem.system.SolarPhysics;
 import com.kintil555.solarsystem.system.SolarSystem;
@@ -86,12 +87,16 @@ final class SolarTools {
 	/** Nearest planet near the ray; the aim cone widens with distance so far planets stay easy to hit. */
 	static Hit pick(Vec3 o, Vec3 d) {
 		SolarSystem sys = SolarSystemClient.system();
-		if (sys == null) {
+		SolarPhysics phys = SolarSystemClient.physics();
+		if (sys == null || phys == null) {
 			return new Hit(-1, 0.0);
 		}
 		int best = -1;
 		double bestT = Double.MAX_VALUE;
 		for (Planet p : sys.planets()) {
+			if (!phys.stellar().alive(p.index())) {
+				continue;
+			}
 			Vec3 c = planetVisual(p.index());
 			if (c == null) {
 				continue;
@@ -185,6 +190,7 @@ final class SolarTools {
 	private static void laser(Minecraft mc, Ray ray) {
 		long now = mc.level.getGameTime();
 		SolarSystem sys = SolarSystemClient.system();
+		SolarPhysics phys = SolarSystemClient.physics();
 		Hit hit = pick(ray.origin(), ray.dir());
 		double end = BEAM_RANGE;
 		Planet target = null;
@@ -232,7 +238,9 @@ final class SolarTools {
 				SolarView.asteroids.remove(rock);
 			}
 		}
-		double sunT = sphereHit(ray.origin(), ray.dir(), SolarSystem.SUN_CENTER, SolarSystem.SUN_RADIUS);
+		float sunRadius = SolarView.sunVisualRadius(map, phys.stellar());
+		double sunT = sunRadius > 0.0f ? sphereHit(ray.origin(), ray.dir(), SolarSystem.SUN_CENTER, sunRadius) : -1.0;
+		boolean sunHit = false;
 		if (sunT > 0.0 && sunT < end) {
 			if (rock != null) {
 				rock.heat = 0;
@@ -240,11 +248,19 @@ final class SolarTools {
 			end = sunT;
 			target = null;
 			local = null;
+			sunHit = true;
+		}
+		boolean ready = now - lastLaser >= LASER_COOLDOWN_TICKS;
+		if (ready && (target != null || sunHit)) {
+			lastLaser = now;
+		}
+		if (sunHit && ready) {
+			ClientPlayNetworking.send(new LaserPayload(-1));
 		}
 		if (target != null) {
-			if (now - lastLaser >= LASER_COOLDOWN_TICKS) {
-				lastLaser = now;
+			if (ready) {
 				ClientPlayNetworking.send(new LaunchPayload(target.index(), (float) ray.dir().x, (float) ray.dir().y, (float) ray.dir().z, LASER_POWER));
+				ClientPlayNetworking.send(new LaserPayload(target.index()));
 			}
 			SolarSystemRenderer renderer = SolarSystemClient.renderer();
 			if (local != null && renderer != null) {
@@ -304,7 +320,7 @@ final class SolarTools {
 		double vx = spot.x - SolarSystem.SUN_CENTER.x, vy = spot.y - SolarSystem.SUN_CENTER.y, vz = spot.z - SolarSystem.SUN_CENTER.z;
 		double shown = Math.sqrt(vx * vx + vy * vy + vz * vz);
 		double real = map.unmap(shown);
-		if (shown < 1e-6 || real < SolarSystem.SUN_RADIUS * 1.6) {
+		if (shown < 1e-6 || real < phys.stellar().sunRadius() * 1.6) {
 			mc.player.sendOverlayMessage(Component.literal("Terlalu dekat dengan Matahari"));
 			return;
 		}
@@ -340,6 +356,7 @@ final class SolarTools {
 	/** Advances beams and asteroids by one game tick. */
 	static void tick(Minecraft mc, SolarPhysics phys, SolarSystem sys) {
 		SolarView.beams.removeIf(b -> --b.ticksLeft <= 0);
+		SolarView.blasts.removeIf(b -> --b.ticksLeft <= 0);
 		if (SolarView.laserHeld && SolarView.tool == SolarView.Tool.LASER && SolarView.mode == SolarView.Mode.FREE
 				&& mc.gui.screen() instanceof ToolbarScreen) {
 			laser(mc, cursorRay(mc, mc.mouseHandler.getScaledXPos(mc.getWindow()), mc.mouseHandler.getScaledYPos(mc.getWindow())));
@@ -360,12 +377,15 @@ final class SolarTools {
 			}
 			a.recordTrail();
 			double r = Math.sqrt(a.p[0] * a.p[0] + a.p[1] * a.p[1] + a.p[2] * a.p[2]);
-			if (r < SolarSystem.SUN_RADIUS * 1.05 || r > ASTEROID_ESCAPE || !Double.isFinite(r)) {
+			if (r < phys.stellar().sunRadius() * 1.05 || r > ASTEROID_ESCAPE || !Double.isFinite(r)) {
 				it.remove();
 				continue;
 			}
 			for (Planet p : sys.planets()) {
 				int i = p.index();
+				if (!phys.stellar().alive(i)) {
+					continue;
+				}
 				double dx = a.p[0] - (phys.px(i) + phys.vx(i) * age);
 				double dy = a.p[1] - (phys.py(i) + phys.vy(i) * age);
 				double dz = a.p[2] - (phys.pz(i) + phys.vz(i) * age);

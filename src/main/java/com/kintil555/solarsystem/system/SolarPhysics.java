@@ -26,6 +26,7 @@ public final class SolarPhysics {
 	private final double[] p;
 	private final double[] v;
 	private final double[] acc;
+	private final StellarState stellar;
 
 	private SolarPhysics(SolarSystem system) {
 		this.system = system;
@@ -37,6 +38,7 @@ public final class SolarPhysics {
 		this.p = new double[n * 3];
 		this.v = new double[n * 3];
 		this.acc = new double[n * 3];
+		this.stellar = new StellarState(n);
 		for (Planet pl : planets) {
 			double k = pl.radius() / 7.0;
 			gm[pl.index()] = gmSun * PLANET_MASS_FACTOR * k * k * k;
@@ -57,6 +59,7 @@ public final class SolarPhysics {
 		SolarPhysics c = new SolarPhysics(system);
 		System.arraycopy(p, 0, c.p, 0, p.length);
 		System.arraycopy(v, 0, c.v, 0, v.length);
+		c.stellar.copyFrom(stellar);
 		return c;
 	}
 
@@ -64,8 +67,31 @@ public final class SolarPhysics {
 		return n;
 	}
 
+	/** Sun's gravity right now: zero once the Sun has gone supernova. */
 	public double gmSun() {
-		return gmSun;
+		return stellar.sunGone() ? 0.0 : gmSun;
+	}
+
+	public StellarState stellar() {
+		return stellar;
+	}
+
+	/** One laser pulse on the Sun. */
+	public void laserSun() {
+		stellar.hitSun();
+	}
+
+	/** One laser pulse on planet {@code i}; an exploded planet is removed for good. */
+	public void laserPlanet(int i) {
+		if (stellar.hitPlanet(i)) {
+			freeze(i);
+		}
+	}
+
+	private void freeze(int i) {
+		v[i * 3] = 0.0;
+		v[i * 3 + 1] = 0.0;
+		v[i * 3 + 2] = 0.0;
 	}
 
 	public double px(int i) { return p[i * 3]; }
@@ -93,6 +119,9 @@ public final class SolarPhysics {
 
 	/** Instantly change the velocity of planet {@code i}. */
 	public void impulse(int i, double dx, double dy, double dz) {
+		if (!stellar.alive(i)) {
+			return;
+		}
 		v[i * 3] += dx;
 		v[i * 3 + 1] += dy;
 		v[i * 3 + 2] += dz;
@@ -128,22 +157,39 @@ public final class SolarPhysics {
 		return out;
 	}
 
-	/** Advance one game tick; planets that hit the Sun or escape are put back on their circular orbit. */
+	/**
+	 * Advance one game tick. A planet that hits (or is swallowed by) the Sun is destroyed for good, one reached by
+	 * the supernova shockwave too; a planet that merely escapes is put back on its circular orbit.
+	 */
 	public void tick(double ticks) {
+		stellar.tick();
 		double dt = 1.0 / SUBSTEPS;
 		accel();
 		for (int s = 0; s < SUBSTEPS; s++) {
 			substep(dt);
 		}
 		for (int i = 0; i < n; i++) {
-			if (crashed(i) || distance(i) > ESCAPE_DISTANCE) {
+			if (!stellar.alive(i)) {
+				freeze(i);
+				continue;
+			}
+			if (stellar.sunGone()) {
+				if (distance(i) - radius[i] <= stellar.shock()) {
+					stellar.destroy(i);
+					freeze(i);
+				}
+			} else if (crashed(i)) {
+				stellar.destroy(i);
+				freeze(i);
+			} else if (distance(i) > ESCAPE_DISTANCE) {
 				circular(i, ticks);
 			}
 		}
 	}
 
 	public boolean crashed(int i) {
-		return distance(i) < SolarSystem.SUN_RADIUS * 1.1 + radius[i];
+		double sunRadius = stellar.sunRadius();
+		return sunRadius > 0.0 && distance(i) < sunRadius * 1.1 + radius[i];
 	}
 
 	private double distance(int i) {
@@ -152,26 +198,43 @@ public final class SolarPhysics {
 	}
 
 	private void substep(double dt) {
-		for (int k = 0; k < v.length; k++) {
-			v[k] += acc[k] * dt * 0.5;
-			p[k] += v[k] * dt;
+		for (int i = 0; i < n; i++) {
+			if (!stellar.alive(i)) {
+				continue;
+			}
+			for (int k = i * 3; k < i * 3 + 3; k++) {
+				v[k] += acc[k] * dt * 0.5;
+				p[k] += v[k] * dt;
+			}
 		}
 		accel();
-		for (int k = 0; k < v.length; k++) {
-			v[k] += acc[k] * dt * 0.5;
+		for (int i = 0; i < n; i++) {
+			if (!stellar.alive(i)) {
+				continue;
+			}
+			for (int k = i * 3; k < i * 3 + 3; k++) {
+				v[k] += acc[k] * dt * 0.5;
+			}
 		}
 	}
 
 	private void accel() {
 		java.util.Arrays.fill(acc, 0.0);
+		double sun = gmSun();
 		for (int i = 0; i < n; i++) {
+			if (!stellar.alive(i)) {
+				continue;
+			}
 			double xi = p[i * 3], yi = p[i * 3 + 1], zi = p[i * 3 + 2];
 			double r2 = xi * xi + yi * yi + zi * zi + SOFT2;
-			double f = -gmSun / (r2 * Math.sqrt(r2));
+			double f = -sun / (r2 * Math.sqrt(r2));
 			acc[i * 3] += xi * f;
 			acc[i * 3 + 1] += yi * f;
 			acc[i * 3 + 2] += zi * f;
 			for (int j = i + 1; j < n; j++) {
+				if (!stellar.alive(j)) {
+					continue;
+				}
 				double dx = p[j * 3] - xi, dy = p[j * 3 + 1] - yi, dz = p[j * 3 + 2] - zi;
 				double d2 = dx * dx + dy * dy + dz * dz + SOFT2;
 				double inv = 1.0 / (d2 * Math.sqrt(d2));
