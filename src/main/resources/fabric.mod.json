@@ -1,0 +1,29 @@
+{
+	"schemaVersion": 1,
+	"id": "solarsystem",
+	"version": "${version}",
+	"name": "Solar System",
+	"description": "Turns Minecraft into a solar system simulator. Every new world is a new, seed-generated solar system.",
+	"authors": [
+		"kintil555"
+	],
+	"contact": {
+		"sources": "https://github.com/kintil555/SolarSystem"
+	},
+	"license": "CC0-1.0",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.kintil555.solarsystem.SolarSystemMod"
+		],
+		"client": [
+			"com.kintil555.solarsystem.client.SolarSystemClient"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}
