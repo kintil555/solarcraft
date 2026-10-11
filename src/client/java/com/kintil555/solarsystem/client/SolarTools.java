@@ -28,6 +28,7 @@ final class SolarTools {
 	private static final float LASER_POWER = 0.08f;
 	private static final int LASER_COOLDOWN_TICKS = 5;
 	private static final int BEAM_TICKS = 3;
+	private static final int ASTEROID_BURN_TICKS = 25;
 	private static final double BEAM_RANGE = 700.0;
 	private static final int MAX_ASTEROIDS = 40;
 	private static final int MAX_MOONS_PER_PLANET = 4;
@@ -203,8 +204,39 @@ final class SolarTools {
 				end = hit.t();
 			}
 		}
+		SolarView.Asteroid rock = null;
+		double rockT = Double.MAX_VALUE;
+		float partial = mc.getDeltaTracker().getGameTimeDeltaPartialTick(false);
+		RadialMap map = SolarView.map(sys);
+		double[] av = new double[3];
+		for (SolarView.Asteroid a : SolarView.asteroids) {
+			SolarView.toVisual(map, a.p[0] + a.v[0] * partial, a.p[1] + a.v[1] * partial, a.p[2] + a.v[2] * partial, av);
+			Vec3 c = new Vec3(av[0], av[1], av[2]);
+			double rx = c.x - ray.origin().x, ry = c.y - ray.origin().y, rz = c.z - ray.origin().z;
+			double t = rx * ray.dir().x + ry * ray.dir().y + rz * ray.dir().z;
+			if (t <= 0.0 || t >= rockT) {
+				continue;
+			}
+			double perp2 = rx * rx + ry * ry + rz * rz - t * t;
+			double limit = a.size * 1.7 + t * 0.02;
+			if (perp2 < limit * limit) {
+				rock = a;
+				rockT = t;
+			}
+		}
+		if (rock != null && rockT < end) {
+			end = rockT;
+			target = null;
+			local = null;
+			if (++rock.heat >= ASTEROID_BURN_TICKS) {
+				SolarView.asteroids.remove(rock);
+			}
+		}
 		double sunT = sphereHit(ray.origin(), ray.dir(), SolarSystem.SUN_CENTER, SolarSystem.SUN_RADIUS);
 		if (sunT > 0.0 && sunT < end) {
+			if (rock != null) {
+				rock.heat = 0;
+			}
 			end = sunT;
 			target = null;
 			local = null;

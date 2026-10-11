@@ -608,7 +608,33 @@ public final class SolarSystemRenderer {
 			pts[(i + 1) * 3 + 1] = (float) v[1];
 			pts[(i + 1) * 3 + 2] = (float) v[2];
 		}
-		drawPolyline(vc, pose, pts, count + 1, 0xE0000000 | a.color, cx, cy, cz, 0.0010f, 0.1f, false, true);
+		// ribbon wide at the head, thin at the tail; the side vector follows the local tangent so it bends smoothly
+		int n = count + 1;
+		float headW = Math.max(0.15f, a.size * 0.5f);
+		float[] sx = new float[n];
+		float[] sy = new float[n];
+		float[] sz = new float[n];
+		for (int i = 0; i < n; i++) {
+			int i0 = Math.max(0, i - 1), i1 = Math.min(n - 1, i + 1);
+			float tx = pts[i1 * 3] - pts[i0 * 3], ty = pts[i1 * 3 + 1] - pts[i0 * 3 + 1], tz = pts[i1 * 3 + 2] - pts[i0 * 3 + 2];
+			float vx = cx - pts[i * 3], vy = cy - pts[i * 3 + 1], vz = cz - pts[i * 3 + 2];
+			float ex = ty * vz - tz * vy, ey = tz * vx - tx * vz, ez = tx * vy - ty * vx;
+			float el = (float) Math.sqrt(ex * ex + ey * ey + ez * ez);
+			float w = headW * (1.0f - (float) i / n);
+			float k = el < 1e-6f ? 0.0f : w / el;
+			sx[i] = ex * k;
+			sy[i] = ey * k;
+			sz[i] = ez * k;
+		}
+		for (int i = 0; i < n - 1; i++) {
+			int c1 = ((int) (0xE0 * (1.0f - (float) i / n)) << 24) | a.color;
+			int c2 = ((int) (0xE0 * (1.0f - (float) (i + 1) / n)) << 24) | a.color;
+			int o = i * 3, q = o + 3;
+			vc.addVertex(pose, pts[o] - sx[i], pts[o + 1] - sy[i], pts[o + 2] - sz[i]).setColor(c1);
+			vc.addVertex(pose, pts[o] + sx[i], pts[o + 1] + sy[i], pts[o + 2] + sz[i]).setColor(c1);
+			vc.addVertex(pose, pts[q] + sx[i + 1], pts[q + 1] + sy[i + 1], pts[q + 2] + sz[i + 1]).setColor(c2);
+			vc.addVertex(pose, pts[q] - sx[i + 1], pts[q + 1] - sy[i + 1], pts[q + 2] - sz[i + 1]).setColor(c2);
+		}
 	}
 
 	private void emitBody(VertexConsumer vc, PoseStack.Pose pose, BodyMesh m, int[] colors, Quaternionf q,

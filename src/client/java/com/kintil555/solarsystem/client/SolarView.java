@@ -27,7 +27,8 @@ final class SolarView {
 	static final class Asteroid {
 		final double[] p = new double[3];
 		final double[] v = new double[3];
-		static final int TRAIL_LEN = 60;
+		static final int TRAIL_LEN = 80;
+		int heat;
 		final double[] trail = new double[TRAIL_LEN * 3];
 		int trailCount;
 		int sampleTick;
@@ -47,11 +48,8 @@ final class SolarView {
 			this.az = az;
 		}
 
-		/** Remembers the Sun-relative position every second tick (newest first). */
+		/** Remembers the Sun-relative position every tick (newest first). */
 		void recordTrail() {
-			if ((++sampleTick & 1) != 0) {
-				return;
-			}
 			System.arraycopy(trail, 0, trail, 3, (TRAIL_LEN - 1) * 3);
 			trail[0] = p[0];
 			trail[1] = p[1];
